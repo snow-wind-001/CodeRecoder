@@ -1,0 +1,56 @@
+{
+  "name": "coderecoder-mcp",
+  "version": "1.0.0",
+  "description": "AI-enhanced intelligent code version management system based on MCP protocol. Provides instant file snapshots, project-level version control, and smart change detection.",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "prepare": "npm run build",
+    "test": "echo \"No tests specified\" && exit 0",
+    "clean": "rm -rf dist/",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-generation",
+    "rollback",
+    "version-control",
+    "ai-assistant",
+    "snapshot",
+    "backup",
+    "intelligent-coding",
+    "cursor-like",
+    "project-management"
+  ],
+  "author": "spikebai",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0",
+    "fs-extra": "^11.2.0",
+    "uuid": "^9.0.1",
+    "diff": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/fs-extra": "^11.0.4",
+    "@types/uuid": "^9.0.7",
+    "@types/diff": "^5.0.8",
+    "typescript": "^5.3.0",
+    "tsx": "^4.6.0"
+  },
+  "bin": {
+    "coderecoder-mcp": "./dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spikebai/CodeRecoder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/spikebai/CodeRecoder/issues"
+  },
+  "homepage": "https://github.com/spikebai/CodeRecoder#readme"
+}
