@@ -1,6 +1,6 @@
 {
   "name": "coderecoder-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "AI-enhanced intelligent code version management system based on MCP protocol. Provides instant file snapshots, project-level version control, and smart change detection.",
   "main": "dist/index.js",
   "type": "module",

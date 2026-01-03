@@ -18,6 +18,10 @@ export class ProjectManager {
   private workspaceInfo: WorkspaceInfo;
   private currentProjectRoot: string = '';
   private dataStructureManager?: DataStructureManager;
+  
+  // P0修复: 初始化状态管理，防止竞态条件
+  private initialized: boolean = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
     // Global config stored in user's home directory
@@ -26,18 +30,20 @@ export class ProjectManager {
       availableProjects: [],
       cacheDirectory: ''
     };
-    // 同步初始化（在构造函数中）
-    this.initializeSync();
+    // 启动异步初始化（不阻塞构造函数）
+    this.initPromise = this.initialize();
   }
 
-  private initializeSync(): void {
-    try {
-      // 同步初始化基本配置
-      this.initialize().catch(error => {
-        console.error('异步初始化失败:', error);
-      });
-    } catch (error) {
-      console.error('同步初始化失败:', error);
+  /**
+   * P0修复: 确保初始化完成后再执行操作
+   * 所有公共方法应先调用此方法
+   */
+  async ensureInitialized(): Promise<void> {
+    if (this.initialized) {
+      return;
+    }
+    if (this.initPromise) {
+      await this.initPromise;
     }
   }
 
@@ -58,9 +64,10 @@ export class ProjectManager {
       } else {
         await this.saveWorkspaceInfo();
       }
+      this.initialized = true;
     } catch (error) {
       console.error('Failed to initialize ProjectManager:', error);
-      // Continue with empty workspace if initialization fails
+      this.initialized = true; // Mark as initialized even on error to prevent infinite waiting
     }
   }
 
@@ -82,6 +89,9 @@ export class ProjectManager {
     projectName?: string,
     language?: string
   ): Promise<ToolResponse> {
+    // P0修复: 确保初始化完成
+    await this.ensureInitialized();
+    
     try {
       // Resolve absolute path
       const resolvedPath = path.resolve(projectPath);
@@ -184,6 +194,9 @@ export class ProjectManager {
    * Deactivate current project
    */
   async deactivateProject(saveHistory: boolean = true): Promise<ToolResponse> {
+    // P0修复: 确保初始化完成
+    await this.ensureInitialized();
+    
     try {
       if (!this.workspaceInfo.currentProject) {
         return {
@@ -243,6 +256,9 @@ export class ProjectManager {
    * List all available projects
    */
   async listProjects(): Promise<ToolResponse> {
+    // P0修复: 确保初始化完成
+    await this.ensureInitialized();
+    
     try {
       const projects = this.workspaceInfo.availableProjects.map(project => ({
         name: project.projectName,
@@ -279,6 +295,9 @@ export class ProjectManager {
    * Get current project information
    */
   async getProjectInfo(projectPath?: string): Promise<ToolResponse> {
+    // P0修复: 确保初始化完成
+    await this.ensureInitialized();
+    
     try {
       let targetProject: ProjectConfig | undefined;
 

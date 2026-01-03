@@ -36,6 +36,7 @@ export interface FileSnapshot {
     analysisTime?: string;
     serenaUsed?: boolean;
     llmUsed?: boolean;
+    asyncAnalysis?: boolean; // P2: 标记分析是否异步进行
   };
 }
 
@@ -68,6 +69,10 @@ export class FileSnapshotManager {
   private data: SnapshotData;
   private isProjectBased: boolean = false;
   private aiAnalysisService: AIAnalysisService;
+  
+  // P0修复: 并发锁机制，防止数据竞争
+  private operationLocks: Map<string, Promise<any>> = new Map();
+  private globalLock: Promise<any> = Promise.resolve();
 
   constructor(cacheDirectory?: string) {
     if (cacheDirectory) {
@@ -114,17 +119,71 @@ export class FileSnapshotManager {
     }
   }
 
-  private async saveData(): Promise<void> {
+  /**
+   * P1修复: 路径遍历安全验证
+   * 确保路径在允许的范围内，防止路径遍历攻击
+   */
+  private validatePath(targetPath: string, allowedRoot?: string): { valid: boolean; error?: string } {
     try {
-      const dataPath = path.join(this.cacheDirectory, 'snapshots', 'snapshots.json');
-      console.log(`💾 准备保存数据到: ${dataPath}`);
-      console.log(`📊 当前数据: 会话数=${this.data.sessions.length}, 总快照数=${this.data.sessions.reduce((sum, s) => sum + s.snapshots.length, 0)}`);
-      await fs.writeFile(dataPath, JSON.stringify(this.data, null, 2));
-      console.log(`✅ 数据保存成功`);
+      const resolvedPath = path.resolve(targetPath);
+      
+      // 检查基本路径格式
+      if (resolvedPath.includes('..')) {
+        return { valid: false, error: '路径包含非法的父目录引用' };
+      }
+      
+      // 检查是否是系统敏感路径
+      const sensitivePatterns = ['/etc/', '/usr/', '/bin/', '/sbin/', '/boot/', '/root/', '/sys/', '/proc/'];
+      for (const pattern of sensitivePatterns) {
+        if (resolvedPath.startsWith(pattern)) {
+          return { valid: false, error: `安全错误: 禁止访问系统路径 ${pattern}` };
+        }
+      }
+      
+      // 如果指定了允许的根目录，验证路径是否在其下
+      if (allowedRoot) {
+        const resolvedRoot = path.resolve(allowedRoot);
+        if (!resolvedPath.startsWith(resolvedRoot)) {
+          return { valid: false, error: `安全错误: 路径 "${targetPath}" 超出允许范围 "${allowedRoot}"` };
+        }
+      }
+      
+      return { valid: true };
     } catch (error) {
-      console.error('Failed to save snapshot data:', error);
-      throw error;
+      return { valid: false, error: `路径验证失败: ${error}` };
     }
+  }
+
+  /**
+   * P0修复: 使用锁保护异步操作，防止并发数据竞争
+   */
+  private async withLock<T>(lockKey: string, operation: () => Promise<T>): Promise<T> {
+    const existingLock = this.operationLocks.get(lockKey) || Promise.resolve();
+    
+    const newLock = existingLock.then(async () => {
+      return operation();
+    }).catch(error => {
+      throw error;
+    });
+    
+    this.operationLocks.set(lockKey, newLock.catch(() => {})); // Store lock even on error
+    return newLock;
+  }
+
+  private async saveData(): Promise<void> {
+    // P0修复: 使用全局锁保护数据保存操作
+    return this.withLock('save_data', async () => {
+      try {
+        const dataPath = path.join(this.cacheDirectory, 'snapshots', 'snapshots.json');
+        console.log(`💾 准备保存数据到: ${dataPath}`);
+        console.log(`📊 当前数据: 会话数=${this.data.sessions.length}, 总快照数=${this.data.sessions.reduce((sum, s) => sum + s.snapshots.length, 0)}`);
+        await fs.writeFile(dataPath, JSON.stringify(this.data, null, 2));
+        console.log(`✅ 数据保存成功`);
+      } catch (error) {
+        console.error('Failed to save snapshot data:', error);
+        throw error;
+      }
+    });
   }
 
   /**
@@ -221,45 +280,8 @@ export class FileSnapshotManager {
         };
       }
 
-      // Step 1: AI Analysis BEFORE creating snapshot
-      console.log(`🔍 正在分析代码变化: ${path.basename(filePath)}...`);
-      const analysisResult = await this.aiAnalysisService.analyzeCodeChanges(
-        filePath,
-        undefined, // Use current file content
-        prompt,
-        { useSerena: true, useLLM: true }
-      );
-
-      let aiSummary = prompt;
-      let changeAnalysis = undefined;
-      let enhancedMetadata = { ...metadata };
-
-      if (analysisResult.success) {
-        aiSummary = analysisResult.summary;
-        changeAnalysis = {
-          added: analysisResult.changes.added,
-          deleted: analysisResult.changes.deleted,
-          modified: analysisResult.changes.modified,
-          complexity: analysisResult.aiAnalysis?.complexity || 'medium',
-          intent: analysisResult.aiAnalysis?.intent || '代码修改',
-          impact: analysisResult.aiAnalysis?.impact || '局部影响'
-        };
-        
-        enhancedMetadata = {
-          ...metadata,
-          analysisTime: (analysisResult as any).metadata?.processingTime,
-          serenaUsed: (analysisResult as any).metadata?.serenaUsed || false,
-          llmUsed: (analysisResult as any).metadata?.llmUsed || false
-        };
-
-        console.log(`✅ AI分析完成: ${analysisResult.summary}`);
-      } else {
-        console.log(`⚠️ AI分析失败，使用基础分析: ${analysisResult.error}`);
-        // Fallback to quick analysis
-        aiSummary = await this.aiAnalysisService.quickAnalyze(filePath, prompt);
-      }
-
-      // Step 2: Create file snapshot (fast file operations)
+      // P2优化: 先快速创建快照，然后异步进行AI分析
+      // Step 1: Create file snapshot FIRST (fast file operations)
       const snapshotId = uuidv4();
       const snapshotDir = path.join(this.snapshotsDirectory, snapshotId);
       const fileName = path.basename(filePath);
@@ -270,11 +292,16 @@ export class FileSnapshotManager {
       const fileContent = await fs.readFile(filePath);
       const fileHash = createHash('sha256').update(fileContent).digest('hex');
 
-      // Create snapshot directory and copy file
+      // Create snapshot directory and copy file IMMEDIATELY
       await fs.ensureDir(snapshotDir);
       await fs.copy(filePath, snapshotFilePath);
 
-      // Create enhanced metadata file
+      // 初始化基本元数据（稍后由异步分析更新）
+      let aiSummary = prompt;
+      let changeAnalysis = undefined;
+      let enhancedMetadata = { ...metadata, asyncAnalysis: true };
+
+      // Create initial metadata file
       const metadataPath = path.join(snapshotDir, 'metadata.json');
       const snapshotMetadata = {
         originalPath: filePath,
@@ -291,13 +318,7 @@ export class FileSnapshotManager {
       };
       await fs.writeFile(metadataPath, JSON.stringify(snapshotMetadata, null, 2));
 
-      // Step 3: Save diff analysis (if available)
-      if (analysisResult.success && analysisResult.diffText) {
-        const diffPath = path.join(snapshotDir, 'diff.txt');
-        await fs.writeFile(diffPath, analysisResult.diffText);
-      }
-
-      // Create enhanced snapshot record
+      // Create initial snapshot record
       const snapshot: FileSnapshot = {
         id: snapshotId,
         timestamp: Date.now(),
@@ -312,6 +333,11 @@ export class FileSnapshotManager {
         parentSnapshotId,
         metadata: enhancedMetadata
       };
+
+      // P2优化: Step 2 - 异步后台AI分析（不阻塞快照创建）
+      this.runAsyncAnalysis(snapshotId, filePath, prompt, snapshotDir, sessionIndex).catch(err => {
+        console.warn(`⚠️ 异步AI分析失败: ${err.message}`);
+      });
 
       // Add snapshot to session - 直接修改this.data中的对象
       this.data.sessions[sessionIndex].snapshots.push(snapshot);
@@ -343,7 +369,8 @@ export class FileSnapshotManager {
           aiSummary,
           changeAnalysis,
           originalPrompt: prompt,
-          aiAnalysisAvailable: analysisResult.success
+          aiAnalysisAvailable: false, // P2优化: 分析在后台异步进行
+          asyncAnalysisPending: true
         }
       };
     } catch (error) {
@@ -352,6 +379,73 @@ export class FileSnapshotManager {
         message: 'Failed to create AI-enhanced snapshot',
         error: error instanceof Error ? error.message : String(error)
       };
+    }
+  }
+
+  /**
+   * P2优化: 异步后台AI分析
+   * 快照创建后在后台运行，不阻塞主流程
+   */
+  private async runAsyncAnalysis(
+    snapshotId: string,
+    filePath: string,
+    prompt: string,
+    snapshotDir: string,
+    sessionIndex: number
+  ): Promise<void> {
+    try {
+      console.log(`🔍 开始异步AI分析: ${path.basename(filePath)}...`);
+      
+      const analysisResult = await this.aiAnalysisService.analyzeCodeChanges(
+        filePath,
+        undefined,
+        prompt,
+        { useSerena: true, useLLM: true }
+      );
+
+      if (analysisResult.success) {
+        // 更新快照记录
+        const snapshot = this.data.sessions[sessionIndex]?.snapshots.find(s => s.id === snapshotId);
+        if (snapshot) {
+          snapshot.aiSummary = analysisResult.summary;
+          snapshot.changeAnalysis = {
+            added: analysisResult.changes.added,
+            deleted: analysisResult.changes.deleted,
+            modified: analysisResult.changes.modified,
+            complexity: analysisResult.aiAnalysis?.complexity || 'medium',
+            intent: analysisResult.aiAnalysis?.intent || '代码修改',
+            impact: analysisResult.aiAnalysis?.impact || '局部影响'
+          };
+          snapshot.metadata = {
+            ...snapshot.metadata,
+            analysisTime: (analysisResult as any).metadata?.processingTime,
+            serenaUsed: (analysisResult as any).metadata?.serenaUsed || false,
+            llmUsed: (analysisResult as any).metadata?.llmUsed || false,
+            asyncAnalysis: false // Analysis completed
+          };
+
+          // 更新元数据文件
+          const metadataPath = path.join(snapshotDir, 'metadata.json');
+          await fs.writeFile(metadataPath, JSON.stringify({
+            ...snapshot,
+            originalPath: snapshot.originalPath,
+            snapshotPath: snapshot.snapshotPath
+          }, null, 2));
+
+          // 保存diff
+          if (analysisResult.diffText) {
+            const diffPath = path.join(snapshotDir, 'diff.txt');
+            await fs.writeFile(diffPath, analysisResult.diffText);
+          }
+
+          await this.saveData();
+          console.log(`✅ 异步AI分析完成: ${analysisResult.summary}`);
+        }
+      } else {
+        console.log(`⚠️ 异步AI分析失败: ${analysisResult.error}`);
+      }
+    } catch (error) {
+      console.warn(`⚠️ 异步AI分析异常: ${error}`);
     }
   }
 
@@ -399,6 +493,16 @@ export class FileSnapshotManager {
           success: false,
           message: 'Snapshot file corrupted',
           error: 'File size mismatch'
+        };
+      }
+
+      // P1修复: 路径安全验证
+      const pathValidation = this.validatePath(targetSnapshot.originalPath);
+      if (!pathValidation.valid) {
+        return {
+          success: false,
+          message: '路径安全验证失败',
+          error: pathValidation.error
         };
       }
 
