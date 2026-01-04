@@ -80,11 +80,11 @@ class CodeRecoderServer {
       const tryInitialize = async (): Promise<void> => {
         const projectInfo = await this.projectManager.getProjectInfo();
         if (projectInfo.success && projectInfo.data?.project?.cacheDirectory) {
-          console.log(`🔄 启动时同步所有管理器到项目: ${projectInfo.data.project.cacheDirectory}`);
+          console.error(`🔄 启动时同步所有管理器到项目: ${projectInfo.data.project.cacheDirectory}`);
           await this.historyManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
           await this.snapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
           await this.projectSnapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-          console.log(`✅ 启动时管理器同步完成`);
+          console.error(`✅ 启动时管理器同步完成`);
         } else if (retries < maxRetries) {
           retries++;
           setTimeout(() => tryInitialize(), 200 * retries); // 递增延迟
@@ -612,11 +612,11 @@ class CodeRecoderServer {
 
     if (result.success && result.data?.cacheDirectory) {
       // Update all managers to use the new cache directory
-      console.log(`🔄 同步所有管理器到项目: ${result.data.cacheDirectory}`);
+      console.error(`🔄 同步所有管理器到项目: ${result.data.cacheDirectory}`);
       await this.historyManager.updateCacheDirectory(result.data.cacheDirectory);
       await this.snapshotManager.updateCacheDirectory(result.data.cacheDirectory);
       await this.projectSnapshotManager.updateCacheDirectory(result.data.cacheDirectory);
-      console.log(`✅ 所有管理器同步完成`);
+      console.error(`✅ 所有管理器同步完成`);
 
     }
 
@@ -631,7 +631,7 @@ class CodeRecoderServer {
         await this.historyManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
         await this.snapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
         await this.projectSnapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-        console.log(`🔄 所有管理器已同步到项目: ${projectInfo.data.project.cacheDirectory}`);
+        console.error(`🔄 所有管理器已同步到项目: ${projectInfo.data.project.cacheDirectory}`);
       } else {
         console.warn('⚠️ 无法获取项目信息进行同步');
       }
@@ -667,20 +667,20 @@ class CodeRecoderServer {
     // 确保项目已激活并同步
     const projectInfo = await this.projectManager.getProjectInfo();
     if (projectInfo.success && projectInfo.data?.project?.cacheDirectory) {
-      console.log(`📸 准备同步快照管理器到: ${projectInfo.data.project.cacheDirectory}`);
+      console.error(`📸 准备同步快照管理器到: ${projectInfo.data.project.cacheDirectory}`);
       await this.snapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-      console.log(`📸 快照管理器已同步完成`);
+      console.error(`📸 快照管理器已同步完成`);
     } else {
-      console.log(`⚠️ 无法获取项目信息，使用默认配置`);
+      console.error(`⚠️ 无法获取项目信息，使用默认配置`);
     }
 
-    console.log(`📋 开始获取快照列表...`);
+    console.error(`📋 开始获取快照列表...`);
     const result = await this.snapshotManager.listSnapshots(
       params.sessionId,
       params.filePath,
       params.limit || 20
     );
-    console.log(`📋 快照列表结果: 成功=${result.success}, 快照数量=${result.data?.snapshots?.length || 0}`);
+    console.error(`📋 快照列表结果: 成功=${result.success}, 快照数量=${result.data?.snapshots?.length || 0}`);
 
     if (!result.success) {
       return result;
@@ -908,7 +908,7 @@ class CodeRecoderServer {
           this.projectManager.setCurrentProjectRoot(projectRoot);
         }
         
-        console.log(`🔄 项目快照管理器已同步: ${projectInfo.data.project.cacheDirectory}`);
+        console.error(`🔄 项目快照管理器已同步: ${projectInfo.data.project.cacheDirectory}`);
       } else {
         console.warn('⚠️ 无法获取项目信息进行同步:', projectInfo);
       }

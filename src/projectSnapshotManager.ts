@@ -126,11 +126,11 @@ export class ProjectSnapshotManager {
         lastScanTime: loadedData.lastScanTime || 0 // 确保扫描时间字段存在
       };
       
-      console.log(`📊 加载项目快照数据: ${this.data.snapshots.length}个快照, 当前保存次数: ${this.data.currentSaveNumber}`);
-      console.log(`📋 文件基线数量: ${Object.keys(this.data.fileBaselines).length}个文件`);
+      console.error(`📊 加载项目快照数据: ${this.data.snapshots.length}个快照, 当前保存次数: ${this.data.currentSaveNumber}`);
+      console.error(`📋 文件基线数量: ${Object.keys(this.data.fileBaselines).length}个文件`);
     } catch (error) {
       // 文件不存在或损坏，使用默认数据
-      console.log('📊 初始化新的项目快照数据');
+      console.error('📊 初始化新的项目快照数据');
       await this.saveData();
     }
   }
@@ -156,7 +156,7 @@ export class ProjectSnapshotManager {
     return this.withLock('save_data', async () => {
       const dataPath = path.join(this.cacheDirectory, this.SNAPSHOTS_FILE);
       await fs.writeFile(dataPath, JSON.stringify(this.data, null, 2));
-      console.log(`💾 项目快照数据已保存: ${this.data.snapshots.length}个快照`);
+      console.error(`💾 项目快照数据已保存: ${this.data.snapshots.length}个快照`);
     });
   }
 
@@ -165,16 +165,16 @@ export class ProjectSnapshotManager {
    */
   private async analyzeChangesWithSerena(projectRoot: string): Promise<SerenaAnalysis> {
     try {
-      console.log('🔍 使用Serena分析项目变更...');
+      console.error('🔍 使用Serena分析项目变更...');
       
       // 如果是首次快照，建立文件基线
       const baselineCount = Object.keys(this.data.fileBaselines || {}).length;
-      console.log(`📋 当前文件基线数量: ${baselineCount}个文件`);
+      console.error(`📋 当前文件基线数量: ${baselineCount}个文件`);
       
       if (baselineCount === 0) {
-        console.log('🆕 首次快照，建立项目文件基线...');
+        console.error('🆕 首次快照，建立项目文件基线...');
         await this.updateAllFileBaselines(projectRoot);
-        console.log(`✅ 基线建立完成，共建立${Object.keys(this.data.fileBaselines).length}个文件基线`);
+        console.error(`✅ 基线建立完成，共建立${Object.keys(this.data.fileBaselines).length}个文件基线`);
       }
       
       // 智能获取修改的文件列表
@@ -197,7 +197,7 @@ export class ProjectSnapshotManager {
         };
       }
       
-      console.log(`📝 检测到 ${gitModifiedFiles.length} 个Git修改文件`);
+      console.error(`📝 检测到 ${gitModifiedFiles.length} 个Git修改文件`);
       
       // 使用Serena分析每个修改文件的代码质量和结构变化
       const serenaAnalyzedFiles: string[] = [];
@@ -205,7 +205,7 @@ export class ProjectSnapshotManager {
       
       for (const file of gitModifiedFiles.slice(0, 5)) { // 限制分析前5个文件
         try {
-          console.log(`🔍 Serena分析文件: ${file}`);
+          console.error(`🔍 Serena分析文件: ${file}`);
           
           // 调用Serena获取文件符号概览
           const symbolsResult = await this.callSerenaFunction('get_symbols_overview', {
@@ -280,50 +280,50 @@ export class ProjectSnapshotManager {
    * 性能提升: 小项目10倍，中项目20倍，大项目25倍
    */
   private async getModifiedFiles(projectRoot: string): Promise<string[]> {
-    console.log('🔍 开始智能文件变更检测（优先级模式）...');
+    console.error('🔍 开始智能文件变更检测（优先级模式）...');
     
     // 优先级1: Git状态检测（最准确，最快）
     const gitFiles = await this.getGitModifiedFiles(projectRoot);
     if (gitFiles.length > 0) {
-      console.log(`✅ Git检测到 ${gitFiles.length} 个变更文件，使用Git结果`);
+      console.error(`✅ Git检测到 ${gitFiles.length} 个变更文件，使用Git结果`);
       this.data.lastScanTime = Date.now();
       return gitFiles;
     }
-    console.log(`📊 Git检测: 0个文件（Git不可用或无变更）`);
+    console.error(`📊 Git检测: 0个文件（Git不可用或无变更）`);
     
     // 优先级2: 内容哈希对比（次准确，较慢但可靠）
-    console.log('⚠️ Git不可用，使用内容哈希检测...');
+    console.error('⚠️ Git不可用，使用内容哈希检测...');
     const hashFiles = await this.getFilesByHashComparison(projectRoot);
     if (hashFiles.length > 0) {
-      console.log(`✅ 哈希检测到 ${hashFiles.length} 个变更文件`);
+      console.error(`✅ 哈希检测到 ${hashFiles.length} 个变更文件`);
       this.data.lastScanTime = Date.now();
       return hashFiles;
     }
-    console.log(`🔐 哈希对比: 0个内容变更文件`);
+    console.error(`🔐 哈希对比: 0个内容变更文件`);
     
     // 优先级3: 文件统计对比（快速但可能漏检）
-    console.log('⚠️ 哈希无结果，使用文件统计检测...');
+    console.error('⚠️ 哈希无结果，使用文件统计检测...');
     const statsFiles = await this.getFilesByStatsComparison(projectRoot);
     if (statsFiles.length > 0) {
-      console.log(`✅ 统计检测到 ${statsFiles.length} 个变更文件`);
+      console.error(`✅ 统计检测到 ${statsFiles.length} 个变更文件`);
       this.data.lastScanTime = Date.now();
       return statsFiles;
     }
-    console.log(`📈 统计对比: 0个新变更文件`);
+    console.error(`📈 统计对比: 0个新变更文件`);
     
     // 优先级4: 最近修改时间检测 (兜底策略)
-    console.log('⚠️ 统计无结果，使用时间戳检测...');
+    console.error('⚠️ 统计无结果，使用时间戳检测...');
     const recentFiles = await this.getRecentlyModifiedFiles(projectRoot);
-    console.log(`⏰ 时间检测: ${recentFiles.length}个最近修改文件`);
+    console.error(`⏰ 时间检测: ${recentFiles.length}个最近修改文件`);
     
     this.data.lastScanTime = Date.now();
     
     if (recentFiles.length > 0) {
-      console.log(`✅ 智能检测完成: 总共${recentFiles.length}个变更文件`);
+      console.error(`✅ 智能检测完成: 总共${recentFiles.length}个变更文件`);
       return recentFiles;
     }
     
-    console.log('⚠️ 所有检测方法均未发现变更文件');
+    console.error('⚠️ 所有检测方法均未发现变更文件');
     return [];
   }
   
@@ -430,7 +430,7 @@ export class ProjectSnapshotManager {
     tags?: string[]
   ): Promise<{ success: boolean; message: string; data?: any }> {
     try {
-      console.log('📸 开始创建项目快照...');
+      console.error('📸 开始创建项目快照...');
       
       // 确保缓存目录已设置
       if (!this.cacheDirectory) {
@@ -440,7 +440,7 @@ export class ProjectSnapshotManager {
         };
       }
       
-      console.log(`📁 快照保存位置: ${this.cacheDirectory}`);
+      console.error(`📁 快照保存位置: ${this.cacheDirectory}`);
       
       // 更新项目根路径
       this.data.projectRoot = projectRoot;
@@ -451,12 +451,12 @@ export class ProjectSnapshotManager {
       
       // 如果没有检测到变更，进行强制扫描
       if (serenaAnalysis.modifiedFiles.length === 0) {
-        console.log('⚠️ 未检测到变更，执行强制文件扫描...');
+        console.error('⚠️ 未检测到变更，执行强制文件扫描...');
         const forceAnalysis = await this.forceFileAnalysis(projectRoot, prompt);
         
         if (forceAnalysis.modifiedFiles.length === 0) {
           // 即使强制扫描也没发现文件，但用户明确要求快照，创建一个"用户强制快照"
-          console.log('⚠️ 所有检测方法都未发现变更，但用户要求创建快照，执行强制快照创建');
+          console.error('⚠️ 所有检测方法都未发现变更，但用户要求创建快照，执行强制快照创建');
           serenaAnalysis = {
             modifiedFiles: ['*'], // 标记为全项目扫描
             summary: `用户强制快照: ${prompt}`,
@@ -464,7 +464,7 @@ export class ProjectSnapshotManager {
             changeType: 'feature'
           };
         } else {
-          console.log(`🔍 强制扫描发现 ${forceAnalysis.modifiedFiles.length} 个变更文件`);
+          console.error(`🔍 强制扫描发现 ${forceAnalysis.modifiedFiles.length} 个变更文件`);
           // 使用强制扫描的结果
           serenaAnalysis = forceAnalysis;
         }
@@ -519,7 +519,7 @@ export class ProjectSnapshotManager {
       // 保存数据
       await this.saveData();
       
-      console.log(`✅ 项目快照创建完成: ${snapshotType} #${this.data.currentSaveNumber}`);
+      console.error(`✅ 项目快照创建完成: ${snapshotType} #${this.data.currentSaveNumber}`);
       
       return {
         success: true,
@@ -551,11 +551,11 @@ export class ProjectSnapshotManager {
     
     if (snapshot.type === 'full') {
       // 全量保存：复制整个项目（排除忽略文件）
-      console.log('💾 执行全量保存...');
+      console.error('💾 执行全量保存...');
       await this.copyProjectFiles(projectRoot, snapshotDir);
     } else {
       // 增量保存：只保存修改的文件
-      console.log(`💾 执行增量保存: ${snapshot.changedFiles.length}个文件`);
+      console.error(`💾 执行增量保存: ${snapshot.changedFiles.length}个文件`);
       await this.copyChangedFiles(projectRoot, snapshotDir, snapshot.changedFiles);
     }
     
@@ -568,7 +568,7 @@ export class ProjectSnapshotManager {
    * 复制项目文件（全量）
    */
   private async copyProjectFiles(sourceDir: string, targetDir: string): Promise<void> {
-    console.log(`📂 开始全量复制项目文件: ${sourceDir} -> ${targetDir}`);
+    console.error(`📂 开始全量复制项目文件: ${sourceDir} -> ${targetDir}`);
     
     // 排除的文件和目录模式
     const excludePatterns = [
@@ -589,10 +589,10 @@ export class ProjectSnapshotManager {
       // 首先尝试使用rsync（性能更好）
       const excludeArgs = excludePatterns.map(pattern => `--exclude='${pattern}'`).join(' ');
       const rsyncCmd = `rsync -av ${excludeArgs} "${sourceDir}/" "${targetDir}/"`;
-      console.log(`🔄 执行rsync命令: ${rsyncCmd}`);
+      console.error(`🔄 执行rsync命令: ${rsyncCmd}`);
       
       await execAsync(rsyncCmd);
-      console.log(`✅ rsync复制完成`);
+      console.error(`✅ rsync复制完成`);
       
     } catch (error) {
       console.warn('⚠️ rsync失败，使用Node.js文件复制方法');
@@ -632,7 +632,7 @@ export class ProjectSnapshotManager {
         });
         
         if (shouldExclude) {
-          console.log(`⏭️ 跳过排除项: ${item.name}`);
+          console.error(`⏭️ 跳过排除项: ${item.name}`);
           continue;
         }
         
@@ -645,7 +645,7 @@ export class ProjectSnapshotManager {
         }
       }
       
-      console.log(`✅ Node.js递归复制完成: ${sourceDir} -> ${targetDir}`);
+      console.error(`✅ Node.js递归复制完成: ${sourceDir} -> ${targetDir}`);
       
     } catch (error) {
       console.error(`❌ 递归复制失败: ${error}`);
@@ -720,7 +720,7 @@ export class ProjectSnapshotManager {
     }
     
     this.data.snapshots = snapshotsToKeep;
-    console.log(`🧹 清理完成，删除了 ${snapshotsToDelete.length} 个旧快照`);
+    console.error(`🧹 清理完成，删除了 ${snapshotsToDelete.length} 个旧快照`);
   }
 
   /**
@@ -781,7 +781,7 @@ export class ProjectSnapshotManager {
       
       if (snapshot.type === 'full') {
         // 全量恢复：彻底还原项目状态
-        console.log('🔄 执行全量恢复...');
+        console.error('🔄 执行全量恢复...');
         
         // 安全恢复：首先验证快照内容
         const snapshotFiles = await this.getSnapshotFileList(snapshotDir);
@@ -792,14 +792,14 @@ export class ProjectSnapshotManager {
           };
         }
         
-        console.log(`📊 快照包含 ${snapshotFiles.length} 个文件`);
+        console.error(`📊 快照包含 ${snapshotFiles.length} 个文件`);
         
         try {
           // 安全的rsync恢复：移除危险的--delete参数
           const rsyncCmd = `rsync -av --exclude='.CodeRecoder' "${snapshotDir}/" "${this.data.projectRoot}/"`;
-          console.log(`🔄 执行安全rsync恢复命令: ${rsyncCmd}`);
+          console.error(`🔄 执行安全rsync恢复命令: ${rsyncCmd}`);
           await execAsync(rsyncCmd);
-          console.log(`✅ rsync全量恢复完成`);
+          console.error(`✅ rsync全量恢复完成`);
           
         } catch (error) {
           console.warn('⚠️ rsync恢复失败，使用Node.js方法');
@@ -809,14 +809,14 @@ export class ProjectSnapshotManager {
         }
       } else {
         // 智能增量恢复：需要先恢复依赖的快照链
-        console.log(`🔄 执行智能增量恢复: ${snapshot.changedFiles.length}个文件`);
+        console.error(`🔄 执行智能增量恢复: ${snapshot.changedFiles.length}个文件`);
         
         // 构建恢复链
         const restoreChain = await this.buildRestoreChain(snapshot);
-        console.log(`🔗 需要恢复 ${restoreChain.length} 个快照 (包括依赖)`);
+        console.error(`🔗 需要恢复 ${restoreChain.length} 个快照 (包括依赖)`);
         
         if (restoreChain.length > 1) {
-          console.log(`📋 恢复顺序: ${restoreChain.map(s => `#${s.saveNumber}(${s.type})`).join(' → ')}`);
+          console.error(`📋 恢复顺序: ${restoreChain.map(s => `#${s.saveNumber}(${s.type})`).join(' → ')}`);
         }
         
         // 按顺序恢复每个快照
@@ -824,7 +824,7 @@ export class ProjectSnapshotManager {
           const chainSnapshot = restoreChain[i];
           const chainSnapshotDir = path.join(this.cacheDirectory, this.SNAPSHOTS_DIR, chainSnapshot.id);
           
-          console.log(`🔄 [${i + 1}/${restoreChain.length}] 恢复快照 #${chainSnapshot.saveNumber} (${chainSnapshot.type})`);
+          console.error(`🔄 [${i + 1}/${restoreChain.length}] 恢复快照 #${chainSnapshot.saveNumber} (${chainSnapshot.type})`);
           
           if (chainSnapshot.type === 'full') {
             // 全量快照：验证后安全恢复
@@ -836,7 +836,7 @@ export class ProjectSnapshotManager {
             try {
               const rsyncCmd = `rsync -av --exclude='.CodeRecoder' "${chainSnapshotDir}/" "${this.data.projectRoot}/"`;
               await execAsync(rsyncCmd);
-              console.log(`✅ 全量恢复完成: ${snapshotFiles.length}个文件`);
+              console.error(`✅ 全量恢复完成: ${snapshotFiles.length}个文件`);
             } catch (error) {
               await this.restoreProjectManually(chainSnapshotDir, this.data.projectRoot, false);
             }
@@ -859,7 +859,7 @@ export class ProjectSnapshotManager {
                 console.error(`❌ 恢复文件失败 ${file}:`, error);
               }
             }
-            console.log(`✅ 增量恢复完成: ${restoredCount}/${chainSnapshot.changedFiles.length}个文件`);
+            console.error(`✅ 增量恢复完成: ${restoredCount}/${chainSnapshot.changedFiles.length}个文件`);
           }
         }
       }
@@ -892,7 +892,7 @@ export class ProjectSnapshotManager {
     isFullRestore: boolean = false
   ): Promise<void> {
     try {
-      console.log(`🔧 开始手动恢复项目: ${snapshotDir} -> ${targetDir}`);
+      console.error(`🔧 开始手动恢复项目: ${snapshotDir} -> ${targetDir}`);
       
       if (isFullRestore) {
         // 全量恢复：先清理目标目录（保留.CodeRecoder）
@@ -903,7 +903,7 @@ export class ProjectSnapshotManager {
             const itemPath = path.join(targetDir, item.name);
             try {
               await fs.rm(itemPath, { recursive: true, force: true });
-              console.log(`🗑️ 清理旧文件: ${item.name}`);
+              console.error(`🗑️ 清理旧文件: ${item.name}`);
             } catch (error) {
               console.warn(`⚠️ 清理文件失败: ${item.name}`, error);
             }
@@ -914,7 +914,7 @@ export class ProjectSnapshotManager {
       // 递归复制快照内容
       await this.copyDirectoryRecursive(snapshotDir, targetDir, []);
       
-      console.log(`✅ 手动恢复完成`);
+      console.error(`✅ 手动恢复完成`);
       
     } catch (error) {
       console.error('❌ 手动恢复失败:', error);
@@ -1093,7 +1093,7 @@ export class ProjectSnapshotManager {
    * 扫描最近修改的文件，或者基于用户提示强制包含特定文件
    */
   private async forceFileAnalysis(projectRoot: string, prompt: string): Promise<SerenaAnalysis> {
-    console.log('🔍 开始强制文件分析...');
+    console.error('🔍 开始强制文件分析...');
     const modifiedFiles: string[] = [];
     
     try {
@@ -1121,7 +1121,7 @@ export class ProjectSnapshotManager {
         modifiedFiles.push(...mainFiles.slice(0, 5)); // 最多5个主要文件
       }
       
-      console.log(`🔍 强制分析发现 ${modifiedFiles.length} 个文件`);
+      console.error(`🔍 强制分析发现 ${modifiedFiles.length} 个文件`);
       
       // 确保所有路径都是相对路径
       const relativeFiles = modifiedFiles.map(f => {
@@ -1278,7 +1278,7 @@ export class ProjectSnapshotManager {
    * 强制更新项目所有文件的基线
    */
   private async updateAllFileBaselines(projectRoot: string): Promise<void> {
-    console.log('📊 更新项目文件基线...');
+    console.error('📊 更新项目文件基线...');
     
     const allFiles = await this.getAllProjectFiles(projectRoot);
     let updatedCount = 0;
@@ -1289,11 +1289,11 @@ export class ProjectSnapshotManager {
       
       // 每100个文件显示一次进度
       if (updatedCount % 100 === 0) {
-        console.log(`📈 已更新 ${updatedCount}/${allFiles.length} 个文件基线`);
+        console.error(`📈 已更新 ${updatedCount}/${allFiles.length} 个文件基线`);
       }
     }
     
-    console.log(`✅ 文件基线更新完成: ${updatedCount}个文件`);
+    console.error(`✅ 文件基线更新完成: ${updatedCount}个文件`);
     await this.saveData();
   }
   
@@ -1304,7 +1304,7 @@ export class ProjectSnapshotManager {
     try {
       // 这里应该通过MCP协议调用Serena，现在先用模拟数据
       // 在实际实现中，这里会使用MCP客户端调用Serena服务器
-      console.log(`📡 调用Serena函数: ${functionName}`);
+      console.error(`📡 调用Serena函数: ${functionName}`);
       
       // 模拟Serena响应（在实际环境中会被真实调用替换）
       if (functionName === 'get_symbols_overview') {
@@ -1452,7 +1452,7 @@ export class ProjectSnapshotManager {
         const snapshotDir = path.join(this.cacheDirectory, this.SNAPSHOTS_DIR, snapshot.id);
         const files = await this.getSnapshotFileList(snapshotDir);
         if (files.length > 0) {
-          console.log(`🔄 降级使用快照 #${snapshot.saveNumber} 作为基线`);
+          console.error(`🔄 降级使用快照 #${snapshot.saveNumber} 作为基线`);
           lastFullSnapshot = snapshot;
           break;
         }
@@ -1488,7 +1488,7 @@ export class ProjectSnapshotManager {
       }
     }
     
-    console.log(`🔗 构建恢复链: 基础快照 #${chain[0].saveNumber}(${chain[0].type}) + ${chain.length - 1}个增量快照`);
+    console.error(`🔗 构建恢复链: 基础快照 #${chain[0].saveNumber}(${chain[0].type}) + ${chain.length - 1}个增量快照`);
     return chain;
   }
   

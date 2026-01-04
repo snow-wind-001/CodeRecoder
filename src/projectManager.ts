@@ -59,7 +59,7 @@ export class ProjectManager {
         // 恢复当前项目状态
         if (this.workspaceInfo.currentProject) {
           this.currentProjectRoot = this.workspaceInfo.currentProject.projectRoot;
-          console.log(`📂 恢复当前项目: ${this.workspaceInfo.currentProject.projectName}`);
+          console.error(`📂 恢复当前项目: ${this.workspaceInfo.currentProject.projectName}`);
         }
       } else {
         await this.saveWorkspaceInfo();
@@ -534,6 +534,6 @@ export class ProjectManager {
     };
     
     await this.dataStructureManager.initializeProjectStructure(structuredConfig);
-    console.log(`📁 结构化数据已初始化: ${projectName}`);
+    console.error(`📁 结构化数据已初始化: ${projectName}`);
   }
 }

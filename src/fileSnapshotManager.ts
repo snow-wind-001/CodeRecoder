@@ -108,9 +108,9 @@ export class FileSnapshotManager {
         const content = await fs.readFile(dataPath, 'utf-8');
         this.data = JSON.parse(content);
         const totalSnapshots = this.data.sessions.reduce((sum, s) => sum + s.snapshots.length, 0);
-        console.log(`📊 加载文件快照: ${totalSnapshots}个快照`);
+        console.error(`📊 加载文件快照: ${totalSnapshots}个快照`);
       } else {
-        console.log(`📊 文件快照管理器: 快照文件不存在，创建新文件 ${dataPath}`);
+        console.error(`📊 文件快照管理器: 快照文件不存在，创建新文件 ${dataPath}`);
         await this.saveData();
       }
     } catch (error) {
@@ -175,10 +175,10 @@ export class FileSnapshotManager {
     return this.withLock('save_data', async () => {
       try {
         const dataPath = path.join(this.cacheDirectory, 'snapshots', 'snapshots.json');
-        console.log(`💾 准备保存数据到: ${dataPath}`);
-        console.log(`📊 当前数据: 会话数=${this.data.sessions.length}, 总快照数=${this.data.sessions.reduce((sum, s) => sum + s.snapshots.length, 0)}`);
+        console.error(`💾 准备保存数据到: ${dataPath}`);
+        console.error(`📊 当前数据: 会话数=${this.data.sessions.length}, 总快照数=${this.data.sessions.reduce((sum, s) => sum + s.snapshots.length, 0)}`);
         await fs.writeFile(dataPath, JSON.stringify(this.data, null, 2));
-        console.log(`✅ 数据保存成功`);
+        console.error(`✅ 数据保存成功`);
       } catch (error) {
         console.error('Failed to save snapshot data:', error);
         throw error;
@@ -344,18 +344,18 @@ export class FileSnapshotManager {
       this.data.sessions[sessionIndex].lastModified = Date.now();
       this.data.sessions[sessionIndex].currentSnapshotId = snapshot.id;
 
-      console.log(`💾 保存快照数据: 会话 ${sessionId}, 快照数量: ${this.data.sessions[sessionIndex].snapshots.length}`);
-      console.log(`🔍 验证数据结构: sessions=${this.data.sessions.length}, 当前会话快照=${this.data.sessions[sessionIndex].snapshots.length}`);
+      console.error(`💾 保存快照数据: 会话 ${sessionId}, 快照数量: ${this.data.sessions[sessionIndex].snapshots.length}`);
+      console.error(`🔍 验证数据结构: sessions=${this.data.sessions.length}, 当前会话快照=${this.data.sessions[sessionIndex].snapshots.length}`);
 
       // Save immediately to ensure data consistency
       await this.saveData();
       
       // 验证保存
-      console.log(`✅ 快照数据已保存到: ${path.join(this.cacheDirectory, 'snapshots', 'snapshots.json')}`);
+      console.error(`✅ 快照数据已保存到: ${path.join(this.cacheDirectory, 'snapshots', 'snapshots.json')}`);
 
       const processingTime = Date.now() - startTime;
 
-      console.log(`📸 快照创建完成: ${processingTime}ms`);
+      console.error(`📸 快照创建完成: ${processingTime}ms`);
 
       return {
         success: true,
@@ -394,7 +394,7 @@ export class FileSnapshotManager {
     sessionIndex: number
   ): Promise<void> {
     try {
-      console.log(`🔍 开始异步AI分析: ${path.basename(filePath)}...`);
+      console.error(`🔍 开始异步AI分析: ${path.basename(filePath)}...`);
       
       const analysisResult = await this.aiAnalysisService.analyzeCodeChanges(
         filePath,
@@ -439,10 +439,10 @@ export class FileSnapshotManager {
           }
 
           await this.saveData();
-          console.log(`✅ 异步AI分析完成: ${analysisResult.summary}`);
+          console.error(`✅ 异步AI分析完成: ${analysisResult.summary}`);
         }
       } else {
-        console.log(`⚠️ 异步AI分析失败: ${analysisResult.error}`);
+        console.error(`⚠️ 异步AI分析失败: ${analysisResult.error}`);
       }
     } catch (error) {
       console.warn(`⚠️ 异步AI分析异常: ${error}`);
@@ -653,7 +653,7 @@ export class FileSnapshotManager {
       const snapshotDir = path.join(this.cacheDirectory, 'snapshots', snapshotId);
       if (await fs.pathExists(snapshotDir)) {
         await fs.remove(snapshotDir);
-        console.log(`🗑️ 已删除快照文件夹: ${snapshotDir}`);
+        console.error(`🗑️ 已删除快照文件夹: ${snapshotDir}`);
       }
 
       // Remove from session
