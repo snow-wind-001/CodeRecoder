@@ -1,11 +1,10 @@
 /**
- * AI Analysis Service - Integrates Serena code comparison and LLM analysis
- * Provides intelligent summary generation before creating snapshots
+ * Legacy analysis service. It provides deterministic local diff summaries.
+ * Serena and LLM paths remain disabled until real transports are configured.
  */
 
 import fs from 'fs-extra';
 import path from 'path';
-import { spawn } from 'child_process';
 
 export interface CodeAnalysisResult {
   success: boolean;
@@ -41,24 +40,11 @@ export class AIAnalysisService {
     this.checkDependencies();
   }
 
-  private async checkDependencies(): Promise<void> {
-    // Check if Serena MCP is available
-    try {
-      // We'll call Serena through MCP protocol
-      this.serenaAvailable = true; // Assume available based on user's existing setup
-    } catch (error) {
-      console.warn('Serena MCP not available for code comparison');
-      this.serenaAvailable = false;
-    }
-
-    // Check if LLM service is available (vLLM or Bailian)
-    try {
-      // We'll implement LLM analysis based on user's existing setup
-      this.llmAvailable = true; // Assume available
-    } catch (error) {
-      console.warn('LLM service not available for AI analysis');
-      this.llmAvailable = false;
-    }
+  private checkDependencies(): void {
+    // Legacy analysis has no configured MCP client or LLM transport. Keep both
+    // capabilities disabled instead of reporting simulated providers as live.
+    this.serenaAvailable = false;
+    this.llmAvailable = false;
   }
 
   /**
@@ -182,28 +168,10 @@ export class AIAnalysisService {
    * Get code comparison from Serena MCP
    */
   private async getSerenaComparison(filePath: string, newContent: string): Promise<any> {
-    try {
-      // Create temporary file for comparison
-      const tempPath = path.join(path.dirname(filePath), `.temp_${Date.now()}_${path.basename(filePath)}`);
-      await fs.writeFile(tempPath, newContent);
-
-      // Call Serena MCP for comparison (simulated - would need actual MCP call)
-      // This is a placeholder for actual Serena integration
-      const serenaResult = {
-        syntaxChanges: [],
-        semanticChanges: [],
-        qualityScore: 85,
-        suggestions: ['代码结构良好', '建议添加注释']
-      };
-
-      // Cleanup temp file
-      await fs.unlink(tempPath);
-
-      return serenaResult;
-    } catch (error) {
-      console.warn('Serena comparison failed:', error);
-      return null;
-    }
+    void filePath;
+    void newContent;
+    console.warn('Serena comparison is disabled: no Serena MCP client is configured');
+    return null;
   }
 
   /**
@@ -219,7 +187,7 @@ export class AIAnalysisService {
       // Prepare analysis prompt
       const analysisPrompt = this.buildAnalysisPrompt(diffText, prompt);
 
-      // Call LLM service (simulated - would need actual API integration)
+      // Call the configured provider transport (legacy builds keep it disabled).
       const llmResult = await this.callLLMService(analysisPrompt, provider, model);
 
       return {
@@ -264,44 +232,10 @@ ${diffText}
     provider: 'vllm' | 'bailian',
     model?: string
   ): Promise<any> {
-    // This is a placeholder implementation
-    // In reality, you would integrate with actual vLLM or Bailian APIs
-    
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Return mock analysis based on content
-    const hasAdditions = prompt.includes('+');
-    const hasDeletions = prompt.includes('-');
-    const lineCount = prompt.split('\n').length;
-
-    let intent = '代码修改';
-    let impact = '局部影响';
-    let complexity: 'low' | 'medium' | 'high' = 'medium';
-
-    if (hasAdditions && !hasDeletions) {
-      intent = '添加新功能';
-      impact = '功能扩展';
-    } else if (hasDeletions && !hasAdditions) {
-      intent = '删除代码';
-      impact = '功能简化';
-    } else if (hasAdditions && hasDeletions) {
-      intent = '重构代码';
-      impact = '逻辑优化';
-    }
-
-    if (lineCount < 10) {
-      complexity = 'low';
-    } else if (lineCount > 50) {
-      complexity = 'high';
-    }
-
-    return {
-      intent,
-      impact,
-      complexity,
-      recommendations: complexity === 'high' ? '建议分批提交并充分测试' : '建议进行基础测试'
-    };
+    void prompt;
+    void provider;
+    void model;
+    throw new Error('LLM analysis is disabled: no provider transport is configured');
   }
 
   /**

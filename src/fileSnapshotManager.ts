@@ -334,9 +334,9 @@ export class FileSnapshotManager {
         metadata: enhancedMetadata
       };
 
-      // P2优化: Step 2 - 异步后台AI分析（不阻塞快照创建）
+      // Legacy local diff summary runs asynchronously; no AI provider is implied.
       this.runAsyncAnalysis(snapshotId, filePath, prompt, snapshotDir, sessionIndex).catch(err => {
-        console.warn(`⚠️ 异步AI分析失败: ${err.message}`);
+        console.warn(`⚠️ 异步本地差异分析失败: ${err.message}`);
       });
 
       // Add snapshot to session - 直接修改this.data中的对象
@@ -359,7 +359,7 @@ export class FileSnapshotManager {
 
       return {
         success: true,
-        message: 'AI-enhanced snapshot created successfully',
+        message: 'Legacy file snapshot created successfully',
         data: { 
           snapshotId: snapshot.id, 
           sessionId,
@@ -369,14 +369,15 @@ export class FileSnapshotManager {
           aiSummary,
           changeAnalysis,
           originalPrompt: prompt,
-          aiAnalysisAvailable: false, // P2优化: 分析在后台异步进行
+          aiAnalysisAvailable: false,
+          analysisMode: 'local-diff-only',
           asyncAnalysisPending: true
         }
       };
     } catch (error) {
       return {
         success: false,
-        message: 'Failed to create AI-enhanced snapshot',
+        message: 'Failed to create legacy file snapshot',
         error: error instanceof Error ? error.message : String(error)
       };
     }
@@ -394,13 +395,13 @@ export class FileSnapshotManager {
     sessionIndex: number
   ): Promise<void> {
     try {
-      console.error(`🔍 开始异步AI分析: ${path.basename(filePath)}...`);
+      console.error(`🔍 开始异步本地差异分析: ${path.basename(filePath)}...`);
       
       const analysisResult = await this.aiAnalysisService.analyzeCodeChanges(
         filePath,
         undefined,
         prompt,
-        { useSerena: true, useLLM: true }
+        { useSerena: false, useLLM: false }
       );
 
       if (analysisResult.success) {
@@ -439,13 +440,13 @@ export class FileSnapshotManager {
           }
 
           await this.saveData();
-          console.error(`✅ 异步AI分析完成: ${analysisResult.summary}`);
+          console.error(`✅ 异步本地差异分析完成: ${analysisResult.summary}`);
         }
       } else {
-        console.error(`⚠️ 异步AI分析失败: ${analysisResult.error}`);
+        console.error(`⚠️ 异步本地差异分析失败: ${analysisResult.error}`);
       }
     } catch (error) {
-      console.warn(`⚠️ 异步AI分析异常: ${error}`);
+      console.warn(`⚠️ 异步本地差异分析异常: ${error}`);
     }
   }
 

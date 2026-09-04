@@ -1,115 +1,46 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when changing CodeRecoder.
 
-## CodeRecoder Architecture
+## Product Contract
 
-CodeRecoder is an AI-enhanced code version management system built on the **Model Context Protocol (MCP)**. It provides instant file snapshots, project-level version control, and smart change detection, similar to Cursor's multi-round generation and rollback features.
+CodeRecoder is a code backup service, not a Git implementation or an AI analysis service. The production MCP tool surface is registered in `src/index.ts`. Do not re-expose the legacy file-history, simulated Serena, old GUI tools, or incremental-chain tools through MCP. The Vue/Electron app under `desktop/` is an independent local client and must keep using the production backup engine.
 
-### Core Design Principles
+An active project belongs only to the current MCP process. Never persist or restore a globally active project. Project source must not require instrumentation; use `storageRoot` when backup metadata must remain outside the protected tree.
 
-1. **Manager-Based Architecture**: Each major function (file snapshots, project snapshots, history tracking, project activation) is handled by a dedicated manager class in `src/`:
-   - `ProjectManager` - Global project workspace management and activation
-   - `FileSnapshotManager` - High-performance file-level snapshots via direct file copying
-   - `ProjectSnapshotManager` - Cursor-style project snapshots with incremental/full strategies
-   - `HistoryManager` - Traditional edit history tracking (legacy support)
-   - `DataStructureManager` - Project directory structure and configuration
-   - `AIAnalysisService` - Serena integration for code analysis
+## Architecture
 
-2. **Project-Isolated Data**: Each activated project maintains its own `.CodeRecoder/` directory containing:
-   - `config/` - Project settings and metadata
-   - `snapshots/files/` - File-level snapshots organized by session
-   - `snapshots/projects/` - Complete project snapshots
-   - `history/` - Edit history records
-   - `analysis/` - AI-generated insights
-   - `logs/` - Debug and error logs
+- `BackupManager` creates complete logical snapshots and owns manifests, SHA-256 verification, atomic indexes, retention, locks, restore tokens, safety backups, rollback, and startup recovery.
+- `AutoCheckpointManager` watches the active tree, coalesces events, queues writes during backup, and performs periodic reconciliation.
+- `CodeRecoderServer` exposes validated MCP tools, annotations, structured output, process-local activation, and watcher coordination.
+- `DesktopBackupController` adapts the same managers for the Electron UI; preload exposes only typed, allowlisted IPC calls, and renderer code has no Node access.
+- Older managers still compile for migration reference but are not production entry points. Their optional AI providers must remain explicitly unavailable unless a real transport and health check are implemented.
 
-3. **Direct File Copying**: File snapshots use direct file system copying (not content parsing) for sub-50ms performance. This means snapshot operations don't parse file contents.
+## Non-Negotiable Restore Invariants
 
-4. **Four-Way Change Detection**: Project snapshots use intelligent detection:
-   - Git status changes
-   - File stat comparison (size, mtime)
-   - Content SHA256 hashing
-   - Timestamp-based recent file scanning
+1. `preview_project_restore` must verify the target and bind a short-lived token to the current tree hash, project, snapshot, and restore mode.
+2. `restore_project_snapshot` must reject expired, reused, mismatched, or stale tokens.
+3. A verified `protected` pre-restore snapshot and durable recovery journal must exist before source mutation.
+4. Automatic monitoring must pause and discard restore-generated events.
+5. Success requires byte/type/mode verification; failure requires rollback. Leave the recovery journal in place if rollback cannot be verified.
+6. Exact restore may remove only scanned, non-excluded paths. Never recursively delete an ignored non-empty directory.
 
-5. **Incremental + Full Snapshot Strategy**: Project snapshots can be incremental (only changed files) or full (all files). Incremental snapshots maintain dependency chains for complete restoration.
+## Development
 
-## Development Commands
-
-### Build and Run
 ```bash
-npm run build    # Compile TypeScript to dist/
-npm run dev      # Run with tsx for development (hot reload)
-npm start        # Run compiled server (node dist/index.js)
-npm run clean    # Remove dist/ directory
-npm run lint     # Type check without emitting files
+npm run lint       # strict TypeScript check
+npm run build      # emit ESM into dist/
+npm run test:quick # backup, restore, concurrency, recovery, watcher
+npm run test:mcp   # real MCP initialize/list/call lifecycle
+npm run test:desktop # desktop controller activation/restore lifecycle
+npm run desktop:build # type-check and build Electron + Vue
+npm test           # canonical full suite
 ```
 
-### Testing
-Currently no automated tests - manual testing via MCP tool calls.
+Use two-space indentation, single quotes, semicolons, ESM imports with `.js` suffixes, and stderr for diagnostics. Keep MCP results truthful: return `isError: true` on failure and expose degraded watcher state rather than reporting simulated success.
 
-### Type System
-Strict TypeScript with ES2022 target. All interfaces defined in `src/types.ts`.
+Tests must use disposable directories under the OS temp root and external backup storage. Add coverage for both the successful operation and its interruption or rejection path. Run `git diff --check` before handoff.
 
-## MCP Server Integration
+## Safety and Compatibility
 
-The main entry point is `src/index.ts` - an MCP server using stdio transport. It routes tool calls to appropriate managers and coordinates manager synchronization when projects are activated.
-
-### Tool Registration
-Tools are registered in the `setupToolHandlers()` method. Each tool handler:
-1. Validates parameters using TypeScript interfaces from `types.ts`
-2. Delegates to the appropriate manager
-3. Returns structured `ToolResponse` objects
-
-### Manager Synchronization
-When a project is activated, all managers (history, snapshot, projectSnapshot) must have their `updateCacheDirectory()` methods called with the project's `.CodeRecoder/` path. This happens in `initializeManagers()` on startup and when `activate_project` is called.
-
-## Key Data Structures
-
-### Project Configuration
-Stored in `.CodeRecoder/config/project.json`:
-```json
-{
-  "projectName": string,
-  "projectRoot": string,
-  "language"?: string,
-  "activated": boolean,
-  "createdAt": number,
-  "lastUsed": number
-}
-```
-
-### File Snapshots
-Organized by session in `.CodeRecoder/snapshots/files/[sessionId]/` with a `sessions.json` index. Each snapshot is a direct file copy with metadata.
-
-### Project Snapshots
-Stored in `.CodeRecoder/snapshots/projects/[snapshotId]/` with an `index.json` manifest. Incremental snapshots reference a `baseSnapshotId` to form restoration chains.
-
-### Edit History
-Traditional edit tracking in `.CodeRecoder/history/edits.json` with tree-based parent-child relationships.
-
-## Important Implementation Notes
-
-1. **Path Safety**: All file operations use path.join() and validate paths to prevent directory traversal attacks. The `DataStructureManager` provides utility methods for safe path resolution.
-
-2. **Async/Await**: All file system operations use async methods from `fs-extra`. Manager methods that perform I/O are async.
-
-3. **Error Handling**: Managers return structured `ToolResponse` objects with `{success, message, data, error}` fields. The server logs errors and returns user-friendly messages.
-
-4. **Global State**: `ProjectManager` maintains a global cache directory at `~/.coderecoder-global` and tracks the currently active project. Other managers are stateless until a project is activated.
-
-5. **No Git Dependency**: While change detection can use Git status if available, the system works without Git by using file stat and content hashing.
-
-6. **MCP Client Configuration**: To integrate with Claude Desktop or Cline, configure the MCP server to run `node /path/to/CodeRecoder/dist/index.js` with cwd set to the CodeRecoder directory.
-
-## Performance Considerations
-
-- File snapshots: < 50ms via direct copying
-- Project snapshots: < 2s for 100+ file projects
-- Change detection: < 500ms via four-way detection
-- Incremental snapshots only store changed files
-- Snapshot restoration verifies content integrity before overwriting
-
-## AI Integration (Optional)
-
-The `AIAnalysisService` integrates with Serena (`.serena/project.yml`) for code analysis. This is optional - the system works without Serena, but provides enhanced change summaries and complexity analysis when available.
+Do not follow symlinks while scanning. Validate all manifest paths through `safeJoin`. Preserve `.env*`, VCS metadata, dependencies, build output, caches, logs, and configured exclusions during restore. A schema or tool-name change is an MCP API change and must be reflected in `README.md`, `MCP_CONFIG_GUIDE.md`, and lifecycle tests.

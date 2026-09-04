@@ -6,6 +6,8 @@ yarn-error.log*
 
 # Build outputs
 dist/
+dist-desktop/
+release/
 build/
 *.tsbuildinfo
 
@@ -43,6 +45,7 @@ project_snapshots.json
 *.temp
 *~
 .cache/
+.playwright-cli/
 
 # Test coverage
 coverage/

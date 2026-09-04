@@ -1,177 +1,105 @@
-# CodeRecoder VSCode 快速参考
+# CodeRecoder 快速开始
 
-## 🚀 5分钟快速配置
+## 1. 安装
 
-### 1️⃣ 安装Cline扩展
-```
-VSCode → 扩展(Ctrl+Shift+X) → 搜索 "Cline" → 安装
-```
-
-### 2️⃣ 构建CodeRecoder
 ```bash
-cd /home/spikebai/owncode/CodeRecoder
+cd /absolute/path/CodeRecoder
 npm install
-npm run build
+npm test
 ```
 
-### 3️⃣ 配置MCP服务器
-打开VSCode设置 (`Ctrl+,`) → 搜索 "cline.mcpServers" → 添加：
+要求 Node.js 22.12.0+。`npm test` 会先构建，再运行隔离的备份/恢复、桌面控制器和 MCP 协议测试。
+
+## 2. 启动桌面控制台（可选）
+
+```bash
+npm run desktop:start
+```
+
+在竖向窗口中选择工程与外部备份位置，即可查看保护状态、验证快照并执行带预览确认的恢复。开发界面使用 `npm run desktop:dev`；桌面端与 MCP 共用备份格式和跨进程锁，但各自维护进程内激活状态。
+
+## 3. 连接 MCP 客户端
+
+Codex：
+
+```bash
+codex mcp add coderecoder -- node /absolute/path/CodeRecoder/dist/index.js
+codex mcp list
+```
+
+Claude Code：
+
+```bash
+claude mcp add --scope user coderecoder -- node /absolute/path/CodeRecoder/dist/index.js
+claude mcp list
+```
+
+连接后可用 `/mcp` 或客户端的工具列表确认 `coderecoder` 已上线。
+
+## 4. 激活备份
+
+向客户端提出：
+
+```text
+请调用 coderecoder 的 activate_project，保护 /work/my-project，
+将备份保存到 /data/coderecoder-backups，并启用自动检查点。
+```
+
+对应参数：
+
 ```json
 {
-  "cline.mcpServers": {
-    "coderecoder": {
-      "command": "node",
-      "args": ["/home/spikebai/owncode/CodeRecoder/dist/index.js"],
-      "cwd": "/home/spikebai/owncode/CodeRecoder"
-    }
-  }
+  "projectPath": "/work/my-project",
+  "storageRoot": "/data/coderecoder-backups",
+  "autoCheckpoint": true,
+  "maxBackups": 100
 }
 ```
 
-### 4️⃣ 重启VSCode
-```
-Ctrl+Shift+P → "Reload Window"
-```
+省略 `storageRoot` 时会写入工程内的 `.CodeRecoder/backups`。不希望受保护工程出现任何备份元数据时，应始终指定外部目录。
 
-### 5️⃣ 测试连接
-在Cline中输入：
-```
-请列出所有可用的MCP工具
-```
+## 5. 日常使用
 
-✅ **完成！** 现在可以使用了
+自动监听会合并短时间内的连续修改。重要节点仍建议创建命名备份：
 
----
-
-## 📝 常用命令速查
-
-### 项目管理
-```
-# 激活项目
-请激活项目 /path/to/your/project
-
-# 查看项目信息
-请获取当前项目信息
-
-# 列出所有项目
-请列出所有项目
+```json
+{
+  "name": "before-auth-refactor",
+  "prompt": "认证模块重构前的已验证检查点",
+  "tags": ["stable", "auth"]
+}
 ```
 
-### 文件快照
-```
-# 创建文件快照
-请为 /path/to/file.js 创建快照，描述："添加新功能前的备份"
+使用 `get_backup_status` 检查：
 
-# 列出文件快照
-请列出所有文件快照，按时间倒序，显示最近10个
+- `hasUncheckpointedChanges` 是否为 `false`；
+- `automaticCheckpoint.state` 是否为 `running`；
+- `lastError` 是否为空。
 
-# 恢复文件快照
-请恢复快照ID为 xxx-xxx-xxx 的文件
-```
+使用 `list_project_snapshots` 获取快照 UUID，使用 `verify_project_snapshot` 重新校验重要备份。
 
-### 项目快照
-```
-# 创建项目快照
-请创建项目快照：
-- 描述："功能开发完成"
-- 名称："v1.0.0-stable"
-- 标签：["stable", "tested"]
+## 6. 安全恢复
 
-# 列出项目快照
-请列出所有项目快照，使用详细格式
+先调用：
 
-# 恢复项目快照
-请恢复项目快照ID为 yyy-yyy-yyy
+```json
+{
+  "snapshotId": "目标快照 UUID",
+  "mode": "exact"
+}
 ```
 
----
+`preview_project_restore` 会返回变更列表和五分钟有效的 `confirmationToken`。检查列表并明确确认后，再调用：
 
-## 💡 典型工作流程
-
-### 开发新功能
-```
-1. 请激活项目 /path/to/project
-2. 请创建项目快照，描述："开始新功能前的检查点"
-3. （开发功能...）
-4. 请为修改的文件创建快照
-5. 请创建项目快照，描述："新功能开发完成"
+```json
+{
+  "snapshotId": "相同的目标快照 UUID",
+  "confirmationToken": "预览返回的令牌"
+}
 ```
 
-### 实验性修改
-```
-1. 请创建项目快照，描述："实验前的稳定版本"
-2. （进行实验性修改...）
-3. 如果成功 → 创建里程碑快照
-4. 如果失败 → 恢复到步骤1的快照
-```
+不要手工构造或重复使用令牌。`exact` 删除目标快照中不存在的受管代码；`overlay` 只覆盖已有快照路径。恢复前安全备份、结果验证和失败回滚均由服务强制执行。
 
-### AI辅助重构
-```
-1. 请为所有要重构的文件创建快照
-2. 请帮我重构 xxx 文件
-3. 请为重构后的文件创建快照
-4. 如果有问题 → 恢复到重构前的快照
-```
+## 7. 停止监听
 
----
-
-## ⚠️ 常见问题
-
-### MCP服务器连接失败
-```bash
-# 检查构建
-cd /home/spikebai/owncode/CodeRecoder
-npm run build
-
-# 检查Node版本
-node --version  # 需要 >= 18.0.0
-
-# 检查路径配置
-# 确保使用绝对路径，不要用 ~ 或相对路径
-```
-
-### 工具调用失败
-```
-# 确保项目已激活
-请激活项目 /path/to/project
-
-# 查看错误日志
-cat .CodeRecoder/logs/error.log
-```
-
-### 快照恢复失败
-```
-# 验证快照完整性
-请列出项目快照，显示详细信息
-
-# 使用增量快照链恢复
-系统会自动构建恢复链
-```
-
----
-
-## 🎯 最佳实践
-
-✅ **DO** - 推荐做法
-- 重要节点前创建项目快照
-- 使用有意义的描述
-- 定期清理旧快照
-- 结合Git使用
-
-❌ **DON'T** - 避免做法
-- 不要每次小改动都创建项目快照
-- 不要使用模糊的描述
-- 不要跳过描述信息
-- 不要把快照当作唯一备份
-
----
-
-## 📞 获取帮助
-
-- **详细文档**: `VSCODE_USAGE.md`
-- **GitHub Issues**: https://github.com/spikebai/CodeRecoder/issues
-- **查看日志**: `cat .CodeRecoder/logs/error.log`
-
----
-
-**提示**: 将此文件加入VSCode书签或打印出来，方便随时查阅！
+调用 `deactivate_project`。默认会先创建最终检查点；传入 `{"createFinalCheckpoint": false}` 可跳过。自动备份只在 MCP 服务运行且项目已激活时生效。

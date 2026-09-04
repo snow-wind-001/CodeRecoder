@@ -1,732 +1,80 @@
-# CodeRecoder VSCode 使用指南
+# 在 VS Code 中使用 CodeRecoder
 
-> 本指南详细说明如何在VSCode中激活和使用CodeRecoder MCP服务器
-
----
-
-## 📋 目录
-
-1. [系统要求](#系统要求)
-2. [快速开始](#快速开始)
-3. [详细配置步骤](#详细配置步骤)
-4. [使用示例](#使用示例)
-5. [常见问题排查](#常见问题排查)
-6. [进阶使用技巧](#进阶使用技巧)
-
----
-
-## 系统要求
-
-### 必需软件
-
-- **VSCode**: 最新版本（推荐 1.80+）
-- **Node.js**: >= 18.0.0 ([下载链接](https://nodejs.org/))
-- **Git**: 用于版本控制和变更检测
-- **Cline扩展**: VSCode AI助手扩展
-
-### 检查环境
+## 构建服务
 
 ```bash
-# 检查Node.js版本
-node --version  # 应该显示 v18.x.x 或更高
-
-# 检查npm版本
-npm --version   # 应该显示 9.x.x 或更高
-
-# 检查Git版本
-git --version   # 应该显示 git version 2.x.x 或更高
-```
-
----
-
-## 快速开始
-
-### 方式一：使用Cline扩展（推荐）
-
-**5分钟快速配置**：
-
-1. **安装Cline扩展**
-   - 打开VSCode
-   - 按 `Ctrl+Shift+X` 打开扩展面板
-   - 搜索 "Cline" 或 "Cline - AI Coding Assistant"
-   - 点击安装（由Allan Hauge开发）
-
-2. **构建CodeRecoder**
-   ```bash
-   # 在CodeRecoder项目根目录
-   cd /home/spikebai/owncode/CodeRecoder
-   npm install
-   npm run build
-   ```
-
-3. **配置Cline的MCP设置**
-   - 打开VSCode设置 (`Ctrl+,`)
-   - 搜索 "Cline: MCP Servers"
-   - 点击 "Edit in settings.json"
-   - 添加以下配置：
-
-   ```json
-   {
-     "cline.mcpServers": {
-       "coderecoder": {
-         "command": "node",
-         "args": [
-           "/home/spikebai/owncode/CodeRecoder/dist/index.js"
-         ],
-         "cwd": "/home/spikebai/owncode/CodeRecoder"
-       }
-     }
-   }
-   ```
-
-4. **重启VSCode**
-   - 关闭并重新打开VSCode
-   - 或使用命令面板 (`Ctrl+Shift+P`) → "Reload Window"
-
-5. **验证安装**
-   - 打开Cline侧边栏
-   - 输入测试消息："请列出所有可用的MCP工具"
-   - 应该看到CodeRecoder的工具列表
-
-✅ **配置完成！** 现在您可以在Cline中使用CodeRecoder了
-
----
-
-## 详细配置步骤
-
-### 步骤1: 准备CodeRecoder项目
-
-#### 1.1 克隆或更新项目
-
-```bash
-# 如果还没有克隆
-cd /home/spikebai/owncode
-git clone https://github.com/spikebai/CodeRecoder.git
-cd CodeRecoder
-
-# 如果已经克隆，更新代码
-cd /home/spikebai/owncode/CodeRecoder
-git pull origin main
-```
-
-#### 1.2 安装依赖并构建
-
-```bash
-# 安装依赖
+cd /absolute/path/CodeRecoder
 npm install
-
-# 构建TypeScript代码
 npm run build
-
-# 验证构建成功
-ls -la dist/index.js  # 应该存在此文件
 ```
 
-#### 1.3 测试MCP服务器
+VS Code 集成使用 stdio MCP，不会自动读取当前工作区；每个客户端进程都必须显式调用 `activate_project`。仓库另有独立的 Electron 桌面控制台，可运行 `npm run desktop:start` 查看和控制同一格式的备份，但它不会替代或隐式连接 VS Code 内的 MCP 会话。
+
+## Codex IDE 扩展
+
+Codex CLI 与 IDE 扩展共享 MCP 配置。运行：
 
 ```bash
-# 快速测试（可选）
-npm run test:quick
-
-# 或手动测试服务器启动
-npm start
-# 按 Ctrl+C 停止
+codex mcp add coderecoder -- node /absolute/path/CodeRecoder/dist/index.js
+codex mcp list
 ```
 
-**预期输出**：
-```
-📂 恢复当前项目: xxx
-📊 加载文件快照: X个快照
-✅ 启动时管理器同步完成
-```
+重启扩展后，从齿轮菜单的 **MCP servers** 检查连接状态。OpenAI 当前配置说明见 [Codex MCP 文档](https://developers.openai.com/codex/mcp)。
 
-### 步骤2: 安装和配置Cline扩展
+## 其他 VS Code 智能体扩展
 
-#### 2.1 安装Cline
-
-1. **通过VSCode扩展市场安装**
-   ```
-   1. 打开VSCode
-   2. 点击左侧活动栏的扩展图标 (或按 Ctrl+Shift+X)
-   3. 搜索 "Cline"
-   4. 找到 "Cline - AI Coding Assistant" (作者: Allan Hauge)
-   5. 点击 "Install" 按钮
-   ```
-
-2. **通过命令行安装**
-   ```bash
-   code --install-extension saoudrizwan.claude-code
-   ```
-
-#### 2.2 配置Cline API密钥
-
-1. **打开Cline设置**
-   - 方法1: 点击Cline图标 → 点击齿轮图标 → "API Settings"
-   - 方法2: VSCode设置 → 搜索 "Cline"
-
-2. **添加Claude API密钥**
-   ```json
-   {
-     "cline.apiKey": "your-claude-api-key-here"
-   }
-   ```
-
-   > 💡 **获取API密钥**: 访问 [Anthropic Console](https://console.anthropic.com/)
-
-#### 2.3 配置MCP服务器
-
-**方法A: 通过VSCode设置（推荐）**
-
-1. 打开VSCode设置 (`Ctrl+,`)
-2. 搜索 "cline.mcpServers"
-3. 点击 "Edit in settings.json"
-4. 添加MCP服务器配置：
+若扩展支持 `mcpServers` JSON，可按其文档加入：
 
 ```json
 {
-  "cline.mcpServers": {
+  "mcpServers": {
     "coderecoder": {
       "command": "node",
-      "args": [
-        "/home/spikebai/owncode/CodeRecoder/dist/index.js"
-      ],
-      "cwd": "/home/spikebai/owncode/CodeRecoder",
-      "env": {
-        "NODE_ENV": "production"
-      }
+      "args": ["/absolute/path/CodeRecoder/dist/index.js"],
+      "cwd": "/absolute/path/CodeRecoder"
     }
   }
 }
 ```
 
-**方法B: 通过用户设置文件**
+不同扩展的配置文件位置和顶层字段并不统一；不要把 Cursor/Cline 的路径直接假定为 VS Code 全局标准。
 
-1. 打开用户设置文件：
-   - Linux: `~/.config/Code/User/settings.json`
-   - macOS: `~/Library/Application Support/Code/User/settings.json`
-   - Windows: `%APPDATA%\Code\User\settings.json`
+## 首次调用
 
-2. 添加上述配置
+建议对源工程使用独立备份磁盘：
 
-**重要配置说明**：
-
-| 配置项 | 说明 | 示例值 |
-|--------|------|--------|
-| `command` | 执行命令 | `"node"` |
-| `args[0]` | 编译后的入口文件 | 绝对路径到 `dist/index.js` |
-| `cwd` | 工作目录 | CodeRecoder项目根目录 |
-| `env` | 环境变量（可选） | `{"NODE_ENV": "production"}` |
-
-### 步骤3: 验证配置
-
-#### 3.1 重启VSCode
-
-```bash
-# 方法1: 通过命令面板
-Ctrl+Shift+P → "Reload Window"
-
-# 方法2: 通过菜单
-File → Exit → 重新打开VSCode
+```text
+请使用 coderecoder 激活 /work/project，
+storageRoot 设为 /data/coderecoder，启用自动检查点，
+然后报告备份状态。
 ```
 
-#### 3.2 检查MCP服务器状态
+激活成功必须包含 `activationCheckpoint`，且 `automaticCheckpoint.state` 应为 `running`。如果是 `degraded`，先处理 `lastError`，不要假定自动备份仍可靠。
 
-1. **打开Cline侧边栏**
-   - 点击左侧活动栏的Cline图标
-   - 或使用快捷键（默认未设置，可在设置中配置）
+## 日常提示词
 
-2. **查看MCP连接状态**
-   - 在Cline聊天框输入：
-   ```
-   请检查MCP服务器连接状态，并列出所有可用的工具
-   ```
-
-3. **预期响应**
-   ```
-   ✅ MCP服务器已连接
-   可用工具：
-   - activate_project
-   - create_file_snapshot
-   - create_project_snapshot
-   - list_file_snapshots
-   - list_project_snapshots
-   - restore_file_snapshot
-   - restore_project_snapshot
-   ... (共18个工具)
-   ```
-
-#### 3.3 功能测试
-
-**测试项目激活**：
-
-```
-请激活当前项目，项目路径是：/home/spikebai/owncode/CodeRecoder
+```text
+请创建名为 before-refactor 的项目备份，并标记 stable。
 ```
 
-**预期输出**：
-```
-✅ 项目已成功激活
-项目名称: CodeRecoder
-语言: typescript
-缓存目录: /home/spikebai/owncode/CodeRecoder/.CodeRecoder
+```text
+请列出最近 10 个备份，并验证我要恢复的那个快照。
 ```
 
----
-
-## 使用示例
-
-### 示例1: 基本工作流程
-
-**场景**: 开始开发新功能前的准备工作
-
-```
-# 步骤1: 激活项目
-请激活项目 /home/spikebai/owncode/CodeRecoder
-
-# 步骤2: 创建项目快照（保存当前状态）
-请创建项目快照，描述："开始新功能开发前的备份"，命名为"开发起点"
-
-# 步骤3: 开发过程中创建文件快照
-请为 src/fileSnapshotManager.ts 创建快照，描述："优化并发锁机制"
-
-# 步骤4: 查看快照历史
-请列出所有文件快照，按时间倒序排列
-
-# 步骤5: 如果需要回滚
-请恢复快照ID为 xxx 的文件
+```text
+请只预览将快照 <UUID> 以 exact 模式恢复会产生的变化，不要执行恢复。
 ```
 
-### 示例2: 完整开发周期
+看到预览后再明确决定是否执行。恢复工具需要预览返回的短期令牌，并会强制创建恢复前安全备份。不要将恢复或删除加入扩展的自动批准列表。
 
-**场景**: 从功能开发到测试的完整流程
+## 会话结束
 
-```
-# 1. 激活项目
-请激活项目 /home/spikebai/owncode/CodeRecoder，项目名称设置为"CodeRecoder"
+调用 `deactivate_project` 停止监听。默认会创建最终检查点。关闭 VS Code 或 MCP 进程也会停止自动检查点；若需要全天候备份，应让 MCP 客户端保持运行并定期检查状态。
 
-# 2. 创建开发起点快照
-请创建项目快照：
-- 描述：开始重构前的稳定版本
-- 名称：v1.1.0-stable
-- 标签：["stable", "before-refactor"]
+## 常见问题
 
-# 3. 开发过程中定期备份
-# （修改代码后...）
-请为 src/projectSnapshotManager.ts 创建快照，描述："优化变更检测算法"
-
-# 4. 功能开发完成后创建里程碑快照
-请创建项目快照：
-- 描述：性能优化完成，变更检测速度提升10-25倍
-- 名称：v1.2.0-performance-optimized
-- 标签：["stable", "performance", "optimized"]
-
-# 5. 查看所有项目快照
-请列出所有项目快照，使用详细格式
-
-# 6. 如果发现问题需要回滚
-请恢复快照ID为 xxx 的项目快照
-```
-
-### 示例3: AI辅助开发流程
-
-**场景**: 使用AI辅助修改代码并自动创建快照
-
-```
-# 1. 激活项目并创建检查点
-请：
-1. 激活项目 /home/spikebai/owncode/CodeRecoder
-2. 创建项目快照，描述："AI重构前的检查点"
-3. 为 src/types.ts 创建文件快照，描述："原始类型定义"
-
-# 2. 让AI协助重构
-请帮我重构 src/types.ts，添加更严格的类型定义：
-- 移除所有 any 类型
-- 为MCP工具添加专门的接口定义
-- 添加详细的JSDoc注释
-
-# 3. AI完成修改后自动创建快照
-请为修改后的 src/types.ts 创建快照，描述："添加严格类型定义"
-
-# 4. 查看变更历史
-请列出 src/types.ts 的所有快照，显示AI分析摘要
-```
-
-### 示例4: 错误恢复场景
-
-**场景**: 修改后发现错误，需要回滚
-
-```
-# 1. 查看最近的快照
-请列出最近的10个文件快照，按时间倒序
-
-# 2. 找到正确的快照ID后恢复
-请恢复文件快照，ID为：xxx-xxx-xxx
-
-# 3. 验证恢复成功
-请读取 src/fileSnapshotManager.ts 的前50行，确认已恢复
-
-# 4. 如果恢复错误，继续回滚
-请恢复项目快照，ID为：yyy-yyy-yyy（回到上一个稳定版本）
-```
-
----
-
-## 常见问题排查
-
-### 问题1: MCP服务器无法连接
-
-**症状**:
-- Cline提示"MCP服务器连接失败"
-- 工具列表为空
-- 错误信息："Cannot connect to MCP server"
-
-**排查步骤**:
-
-1. **检查构建状态**
-   ```bash
-   cd /home/spikebai/owncode/CodeRecoder
-   ls -la dist/index.js
-   ```
-
-   ✅ 应该看到文件存在且大小 > 0
-
-   ❌ 如果不存在，运行：
-   ```bash
-   npm run build
-   ```
-
-2. **检查Node.js版本**
-   ```bash
-   node --version
-   ```
-
-   ✅ 应该 >= v18.0.0
-
-   ❌ 如果版本过低，升级Node.js
-
-3. **检查路径配置**
-
-   在VSCode设置中验证：
-   ```json
-   {
-     "cline.mcpServers": {
-       "coderecoder": {
-         "command": "node",
-         "args": ["/absolute/path/to/CodeRecoder/dist/index.js"],
-         "cwd": "/absolute/path/to/CodeRecoder"
-       }
-     }
-   }
-   ```
-
-   ⚠️ **重要**: 使用绝对路径，不要使用 `~` 或相对路径
-
-4. **手动测试服务器**
-   ```bash
-   cd /home/spikebai/owncode/CodeRecoder
-   npm start
-   ```
-
-   ✅ 应该看到启动日志
-
-   ❌ 如果报错，检查依赖是否完整安装
-
-### 问题2: 工具调用失败
-
-**症状**:
-- Cline提示"工具调用失败"
-- 错误信息："Tool execution failed"
-- 没有任何响应
-
-**排查步骤**:
-
-1. **检查项目是否已激活**
-   ```
-   请获取当前项目信息
-   ```
-
-   ❌ 如果提示"No active project"，先激活项目
-
-2. **检查工作目录权限**
-   ```bash
-   ls -la /home/spikebai/owncode/CodeRecoder/.CodeRecoder
-   ```
-
-   ✅ 应该有读写权限
-
-   ❌ 如果权限不足：
-   ```bash
-   chmod -R 755 /home/spikebai/owncode/CodeRecoder/.CodeRecoder
-   ```
-
-3. **查看错误日志**
-   ```bash
-   cat /home/spikebai/owncode/CodeRecoder/.CodeRecoder/logs/error.log
-   ```
-
-### 问题3: 快照恢复失败
-
-**症状**:
-- 提示"快照文件损坏"
-- 提示"文件不存在"
-- 恢复后内容不正确
-
-**排查步骤**:
-
-1. **验证快照完整性**
-   ```
-   请列出项目快照，显示详细信息
-   ```
-
-   检查 `actualFileCount` 是否 > 0
-
-2. **手动检查快照文件**
-   ```bash
-   ls -la /home/spikebai/owncode/CodeRecoder/.CodeRecoder/snapshots/projects/
-   ```
-
-3. **使用增量快照链恢复**
-   ```
-   请恢复项目快照，系统会自动构建恢复链
-   ```
-
-### 问题4: 性能问题
-
-**症状**:
-- 快照创建速度慢
-- 变更检测耗时过长
-
-**解决方案**:
-
-1. **启用Git检测**（最快）
-   ```bash
-   # 确保项目是Git仓库
-   cd /your/project
-   git init
-   ```
-
-2. **调整文件基线**
-   ```
-   请创建项目快照，系统会自动更新文件基线
-   ```
-
-3. **清理旧快照**
-   ```
-   # 手动清理
-   rm -rf /home/spikebai/owncode/CodeRecoder/.CodeRecoder/snapshots/files/old-session-id
-   ```
-
----
-
-## 进阶使用技巧
-
-### 技巧1: 快捷命令配置
-
-在VSCode中配置自定义快捷键：
-
-```json
-// keybindings.json
-[
-  {
-    "key": "ctrl+shift+a",
-    "command": "cline.send",
-    "args": "请激活当前项目"
-  },
-  {
-    "key": "ctrl+shift+s",
-    "command": "cline.send",
-    "args": "请创建项目快照，描述：手动保存点"
-  },
-  {
-    "key": "ctrl+shift+l",
-    "command": "cline.send",
-    "args": "请列出最近的项目快照"
-  }
-]
-```
-
-### 技巧2: 工作流自动化
-
-**创建开发前检查点脚本**：
-
-```
-# 保存为Cline自定义指令
-名称：开发前准备
-内容：
-1. 激活项目：${workspaceFolder}
-2. 创建项目快照：
-   - 描述："开始 ${input:featureName} 开发前的检查点"
-   - 名称："checkpoint-${input:version}"
-   - 标签：["checkpoint", "${input:featureType}"]
-3. 列出当前状态摘要
-```
-
-### 技巧3: 多项目管理
-
-**配置多个项目的MCP服务器**：
-
-```json
-{
-  "cline.mcpServers": {
-    "coderecoder-project1": {
-      "command": "node",
-      "args": ["/path/to/CodeRecoder/dist/index.js"],
-      "cwd": "/path/to/CodeRecoder"
-    },
-    "coderecoder-project2": {
-      "command": "node",
-      "args": ["/path/to/CodeRecoder/dist/index.js"],
-      "cwd": "/path/to/CodeRecoder"
-    }
-  }
-}
-```
-
-### 技巧4: 集成Serena代码分析
-
-如果安装了Serena MCP服务器，可以增强分析能力：
-
-1. **安装Serena**
-   ```bash
-   # 通过Cline配置添加Serena MCP服务器
-   ```
-
-2. **联合使用**
-   ```
-   请：
-   1. 使用Serena分析当前代码结构
-   2. 基于分析结果创建项目快照
-   3. 生成变更摘要
-   ```
-
-### 技巧5: 自动化工作流示例
-
-**AI辅助重构工作流**：
-
-```
-# 步骤1: 创建重构前快照
-请创建项目快照：
-- 描述："AI重构前的稳定版本"
-- 名称："pre-ai-refactor"
-- 标签：["stable", "checkpoint"]
-
-# 步骤2: 分析当前代码
-请使用Serena分析项目结构，识别需要重构的文件
-
-# 步骤3: 执行重构
-请根据分析结果重构代码，每次修改后自动创建文件快照
-
-# 步骤4: 创建重构后快照
-请创建项目快照：
-- 描述："AI重构完成，已优化 ${fileCount} 个文件"
-- 名称："post-ai-refactor"
-- 标签：["stable", "refactored"]
-
-# 步骤5: 对比变更
-请列出 "pre-ai-refactor" 和 "post-ai-refactor" 之间的所有变更
-```
-
----
-
-## 最佳实践建议
-
-### ✅ 推荐做法
-
-1. **定期创建快照**
-   - 重要功能开发前
-   - 重构代码前
-   - 每天工作结束前
-
-2. **使用有意义的描述**
-   ```
-   ✅ 好的描述： "添加用户认证功能，包含JWT和OAuth2支持"
-   ❌ 坏的描述： "update"
-   ```
-
-3. **合理使用标签**
-   ```json
-   {
-     "tags": ["stable", "feature", "tested", "production-ready"]
-   }
-   ```
-
-4. **分层快照策略**
-   - 日常开发：使用文件快照（快速）
-   - 里程碑节点：使用项目快照（完整）
-
-5. **定期清理**
-   ```bash
-   # 每月清理旧快照
-   # 保留：最近的20个 + 所有带"stable"标签的
-   ```
-
-### ❌ 避免做法
-
-1. **不要创建过于频繁的快照**
-   - 避免每次小改动都创建项目快照
-   - 使用文件快照代替
-
-2. **不要跳过描述**
-   - 没有描述的快照很难识别和恢复
-
-3. **不要在快照中存储大文件**
-   - 快照系统会自动排除 node_modules、.git 等
-   - 手动添加大型二进制文件到排除列表
-
-4. **不要依赖快照作为唯一备份**
-   - 快照是版本控制补充，不是Git替代品
-   - 仍需定期提交到Git
-
----
-
-## 参考资料
-
-### 官方文档
-
-- [MCP协议规范](https://modelcontextprotocol.io/docs)
-- [Cline扩展文档](https://github.com/alluaudanie/cline-vscode)
-- [VSCode扩展开发](https://code.visualstudio.com/api)
-
-### 社区资源
-
-- [CodeRecoder GitHub](https://github.com/spikebai/CodeRecoder)
-- [Issue追踪](https://github.com/spikebai/CodeRecoder/issues)
-- [讨论区](https://github.com/spikebai/CodeRecoder/discussions)
-
-### 相关工具
-
-- [Serena MCP](https://github.com/yourusername/serena-mcp) - 代码分析
-- [Git LFS](https://git-lfs.github.com/) - 大文件存储
-- [Vitest](https://vitest.dev/) - 测试框架
-
----
-
-## 获取帮助
-
-如果遇到问题：
-
-1. **查看日志**
-   ```bash
-   cat /home/spikebai/owncode/CodeRecoder/.CodeRecoder/logs/error.log
-   cat /home/spikebai/owncode/CodeRecoder/.CodeRecoder/logs/debug.log
-   ```
-
-2. **运行诊断**
-   ```bash
-   cd /home/spikebai/owncode/CodeRecoder
-   npm run test:quick
-   ```
-
-3. **提交Issue**
-   - 访问 [GitHub Issues](https://github.com/spikebai/CodeRecoder/issues)
-   - 提供详细的错误日志和复现步骤
-
-4. **联系支持**
-   - Email: support@example.com
-   - Discord: [加入社区](https://discord.gg/coderecoder)
-
----
-
-**最后更新**: 2026-01-03
-**文档版本**: 1.0.0
-**维护者**: CodeRecoder Team
+- 工具未出现：运行 `npm run build`，检查绝对路径并重启扩展。
+- 状态显示未备份变化：创建手动快照或等待一次防抖/周期对账。
+- 恢复令牌失效：文件在预览后发生变化或超过五分钟，重新预览。
+- 不希望工程出现 `.CodeRecoder`：激活时设置工程外的 `storageRoot`。
+- `.env` 未被恢复：这是默认安全排除行为；敏感配置应使用专用密钥备份方案。

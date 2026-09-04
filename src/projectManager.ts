@@ -54,13 +54,16 @@ export class ProjectManager {
       
       if (await fs.pathExists(configFile)) {
         const content = await fs.readFile(configFile, 'utf-8');
-        this.workspaceInfo = JSON.parse(content);
-        
-        // 恢复当前项目状态
-        if (this.workspaceInfo.currentProject) {
-          this.currentProjectRoot = this.workspaceInfo.currentProject.projectRoot;
-          console.error(`📂 恢复当前项目: ${this.workspaceInfo.currentProject.projectName}`);
-        }
+        const saved = JSON.parse(content) as WorkspaceInfo;
+        // The active project is deliberately process-local. Only the project
+        // registry is restored, so parallel MCP clients cannot steal state.
+        this.workspaceInfo = {
+          availableProjects: (saved.availableProjects ?? []).map(project => ({
+            ...project,
+            activated: false
+          })),
+          cacheDirectory: ''
+        };
       } else {
         await this.saveWorkspaceInfo();
       }
@@ -72,10 +75,22 @@ export class ProjectManager {
   }
 
   private async saveWorkspaceInfo(): Promise<void> {
+    const configFile = path.join(this.globalConfigPath, 'workspace.json');
+    const temporaryFile = `${configFile}.tmp-${process.pid}-${uuidv4()}`;
     try {
-      const configFile = path.join(this.globalConfigPath, 'workspace.json');
-      await fs.writeFile(configFile, JSON.stringify(this.workspaceInfo, null, 2));
+      const persistedWorkspace: WorkspaceInfo = {
+        availableProjects: this.workspaceInfo.availableProjects.map(project => ({
+          ...project,
+          activated: false
+        })),
+        cacheDirectory: ''
+      };
+      await fs.writeFile(temporaryFile, `${JSON.stringify(persistedWorkspace, null, 2)}\n`, {
+        flag: 'wx'
+      });
+      await fs.rename(temporaryFile, configFile);
     } catch (error) {
+      await fs.remove(temporaryFile);
       console.error('Failed to save workspace info:', error);
       throw error;
     }
@@ -328,13 +343,16 @@ export class ProjectManager {
         message: 'Project information retrieved',
         data: {
           project: {
+            projectName: targetProject.projectName,
+            projectRoot: targetProject.projectRoot,
             name: targetProject.projectName,
             path: targetProject.projectRoot,
             language: targetProject.language,
             activated: targetProject.activated,
             createdAt: targetProject.createdAt,
             lastUsed: targetProject.lastUsed,
-            settings: targetProject.settings
+            settings: targetProject.settings,
+            cacheDirectory: cacheDir
           },
           status: {
             directoryExists: dirExists,

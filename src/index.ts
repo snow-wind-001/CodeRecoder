@@ -1,932 +1,627 @@
 #!/usr/bin/env node
 
-/**
- * CodeRecoder MCP Server
- * 
- * A Model Context Protocol server that provides code generation with rollback functionality.
- * Inspired by Cursor's multi-round generation and undo features.
- * 
- * This server can be integrated with Cline or other MCP-compatible AI assistants
- * to provide sophisticated version control for AI-generated code.
- */
-
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import path from 'path';
+import { pathToFileURL } from 'url';
+import * as z from 'zod/v4';
+import { AutoCheckpointManager } from './autoCheckpointManager.js';
 import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  Tool,
-} from '@modelcontextprotocol/sdk/types.js';
-import { HistoryManager } from './historyManager.js';
-import { ProjectManager } from './projectManager.js';
-import { FileSnapshotManager } from './fileSnapshotManager.js';
-import { ProjectSnapshotManager } from './projectSnapshotManager.js';
-import {
-  RecordEditParams,
-  RollbackParams,
-  ListHistoryParams,
-  CreateSessionParams,
-  GetDiffParams,
-  ActivateProjectParams,
-  ListProjectsParams,
-  GetProjectInfoParams,
-  DeactivateProjectParams,
-  ToolResponse
-} from './types.js';
+  BackupManager,
+  BackupResponse,
+  RestoreMode
+} from './backupManager.js';
 
-class CodeRecoderServer {
-  private server: Server;
-  private historyManager: HistoryManager;
-  private projectManager: ProjectManager;
-  private snapshotManager: FileSnapshotManager;
-  private projectSnapshotManager: ProjectSnapshotManager;
+const SERVER_VERSION = '3.0.0';
+
+const responseSchema = {
+  success: z.boolean(),
+  message: z.string(),
+  data: z.record(z.string(), z.unknown()).optional(),
+  error: z.string().optional()
+};
+
+interface ActiveProject {
+  name: string;
+  root: string;
+  activatedAt: number;
+  backupManager: BackupManager;
+  autoCheckpoint?: AutoCheckpointManager;
+}
+
+export class CodeRecoderServer {
+  private readonly mcp: McpServer;
+  private activeProject?: ActiveProject;
+  private lifecycleTail: Promise<void> = Promise.resolve();
 
   constructor() {
-    // Initialize MCP server
-    this.server = new Server(
+    this.mcp = new McpServer(
       {
         name: 'coderecoder-mcp',
-        version: '2.0.0',
+        version: SERVER_VERSION
       },
       {
-        capabilities: {
-          tools: {},
+        instructions: [
+          'CodeRecoder is a code backup service, not a replacement for Git.',
+          'Call activate_project before using project backup tools.',
+          'Automatic filesystem checkpoints run only while this MCP process has an active project.',
+          'Before any restore, call preview_project_restore and show the proposed changes to the user.',
+          'Call restore_project_snapshot only after explicit user confirmation; never invent or reuse a confirmation token.',
+          'Exact restore removes managed code paths absent from the selected backup, while configured exclusions are preserved.',
+          'Check get_backup_status for degraded monitoring or uncheckpointed changes.'
+        ].join(' ')
+      }
+    );
+
+    this.registerTools();
+    this.mcp.server.onclose = () => {
+      void this.deactivateProject(true).then(response => {
+        if (!response.success) {
+          console.error('Final checkpoint after transport close failed:', response.error ?? response.message);
+        }
+      });
+    };
+  }
+
+  async connect(transport: Transport): Promise<void> {
+    await this.mcp.connect(transport);
+  }
+
+  async close(): Promise<void> {
+    if (this.activeProject) {
+      const response = await this.deactivateProject(true);
+      if (!response.success) {
+        console.error('CodeRecoder shutdown checkpoint failed:', response.error ?? response.message);
+      }
+    }
+    await this.mcp.close();
+  }
+
+  private registerTools(): void {
+    this.mcp.registerTool(
+      'activate_project',
+      {
+        title: 'Activate Code Backup',
+        description: 'Activate one project for this MCP process, create a verified baseline, and optionally start automatic checkpoints. Use storageRoot to keep all backup data outside a protected project.',
+        inputSchema: {
+          projectPath: z.string().min(1).describe('Project directory to protect'),
+          projectName: z.string().min(1).max(120).optional(),
+          storageRoot: z.string().min(1).optional().describe('Optional external directory for backup storage'),
+          maxBackups: z.number().int().min(2).max(10_000).optional(),
+          autoCheckpoint: z.boolean().optional().describe('Defaults to true'),
+          debounceMs: z.number().int().min(100).max(60_000).optional(),
+          reconciliationIntervalMs: z.number().int().min(1_000).max(86_400_000).optional(),
+          excludeNames: z.array(z.string().min(1).max(255).regex(/^[^/\\]+$/)).max(100).optional()
         },
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false
+        }
+      },
+      async args => this.toToolResult(await this.activateProject(args))
+    );
+
+    this.mcp.registerTool(
+      'deactivate_project',
+      {
+        title: 'Deactivate Code Backup',
+        description: 'Create a final checkpoint by default, stop automatic monitoring, and clear this process-local active project.',
+        inputSchema: {
+          createFinalCheckpoint: z.boolean().optional().describe('Defaults to true')
+        },
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      async ({ createFinalCheckpoint }) => this.toToolResult(
+        await this.deactivateProject(createFinalCheckpoint ?? true)
+      )
+    );
+
+    this.mcp.registerTool(
+      'get_backup_status',
+      {
+        title: 'Get Backup Status',
+        description: 'Report active-project storage, integrity evidence, pending changes, and automatic-checkpoint health.',
+        inputSchema: {},
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      async () => this.toToolResult(await this.getBackupStatus())
+    );
+
+    this.mcp.registerTool(
+      'create_project_snapshot',
+      {
+        title: 'Create Verified Code Backup',
+        description: 'Create an independently restorable, SHA-256-verified backup of the active project. Unchanged files may be deduplicated in storage.',
+        inputSchema: {
+          name: z.string().min(1).max(200).optional(),
+          prompt: z.string().min(1).max(2_000).optional(),
+          tags: z.array(z.string().min(1).max(80)).max(32).optional(),
+          skipIfUnchanged: z.boolean().optional().describe('Defaults to false for explicit backups')
+        },
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false
+        }
+      },
+      async args => {
+        const active = this.requireActiveProject();
+        if (!active.success) return this.toToolResult(active.response);
+        return this.toToolResult(await active.project.backupManager.createBackup({
+          name: args.name,
+          prompt: args.prompt,
+          tags: args.tags,
+          trigger: 'manual',
+          skipIfUnchanged: args.skipIfUnchanged ?? false
+        }));
       }
     );
 
-    // Initialize project manager
-    this.projectManager = new ProjectManager();
-    
-    // Initialize managers (will be updated when project is activated)
-    this.historyManager = new HistoryManager();
-    this.snapshotManager = new FileSnapshotManager();
-    this.projectSnapshotManager = new ProjectSnapshotManager();
-
-    this.setupToolHandlers();
-    this.setupErrorHandling();
-    
-    // 启动时自动同步到当前激活的项目（异步执行，不阻塞启动）
-    this.initializeManagers();
-  }
-
-  private async initializeManagers(): Promise<void> {
-    try {
-      // 重试机制确保项目管理器初始化完成
-      const maxRetries = 5;
-      let retries = 0;
-      
-      const tryInitialize = async (): Promise<void> => {
-        const projectInfo = await this.projectManager.getProjectInfo();
-        if (projectInfo.success && projectInfo.data?.project?.cacheDirectory) {
-          console.error(`🔄 启动时同步所有管理器到项目: ${projectInfo.data.project.cacheDirectory}`);
-          await this.historyManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-          await this.snapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-          await this.projectSnapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-          console.error(`✅ 启动时管理器同步完成`);
-        } else if (retries < maxRetries) {
-          retries++;
-          setTimeout(() => tryInitialize(), 200 * retries); // 递增延迟
+    this.mcp.registerTool(
+      'list_project_snapshots',
+      {
+        title: 'List Code Backups',
+        description: 'List verified backups newest first, including hashes, triggers, sizes, and change counts.',
+        inputSchema: {
+          limit: z.number().int().min(1).max(500).optional()
+        },
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
         }
-      };
-      
-      // 立即尝试一次，然后异步重试
-      setTimeout(() => tryInitialize(), 50);
-      
-    } catch (error) {
-      console.warn('启动时管理器同步警告:', error);
-    }
+      },
+      async ({ limit }) => {
+        const active = this.requireActiveProject();
+        if (!active.success) return this.toToolResult(active.response);
+        return this.toToolResult(await active.project.backupManager.listBackups(limit ?? 50));
+      }
+    );
+
+    this.mcp.registerTool(
+      'preview_project_restore',
+      {
+        title: 'Preview Code Restore',
+        description: 'Verify a backup and calculate the restore change set. Returns a short-lived token; present the preview to the user before requesting confirmation.',
+        inputSchema: {
+          snapshotId: z.string().uuid(),
+          mode: z.enum(['exact', 'overlay']).optional().describe('Defaults to exact')
+        },
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false
+        }
+      },
+      async ({ snapshotId, mode }) => {
+        const active = this.requireActiveProject();
+        if (!active.success) return this.toToolResult(active.response);
+        return this.toToolResult(await active.project.backupManager.previewRestore(
+          snapshotId,
+          (mode ?? 'exact') as RestoreMode
+        ));
+      }
+    );
+
+    this.mcp.registerTool(
+      'restore_project_snapshot',
+      {
+        title: 'Restore Code Backup',
+        description: 'Destructively apply a previously previewed restore. Requires the matching unexpired confirmation token. A verified pre-restore safety backup and automatic rollback are mandatory.',
+        inputSchema: {
+          snapshotId: z.string().uuid(),
+          confirmationToken: z.string().uuid().describe('Token returned by preview_project_restore after explicit user confirmation')
+        },
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: false
+        }
+      },
+      async ({ snapshotId, confirmationToken }) => this.toToolResult(
+        await this.restoreProject(snapshotId, confirmationToken)
+      )
+    );
+
+    this.mcp.registerTool(
+      'verify_project_snapshot',
+      {
+        title: 'Verify Code Backup',
+        description: 'Re-hash the selected backup and validate entry types, paths, modes, and manifest integrity.',
+        inputSchema: {
+          snapshotId: z.string().uuid()
+        },
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      async ({ snapshotId }) => {
+        const active = this.requireActiveProject();
+        if (!active.success) return this.toToolResult(active.response);
+        return this.toToolResult(await active.project.backupManager.verifyBackup(snapshotId));
+      }
+    );
+
+    this.mcp.registerTool(
+      'delete_project_snapshot',
+      {
+        title: 'Delete Code Backup',
+        description: 'Permanently delete one backup. Call only after explicit user approval and repeat the exact snapshot ID in confirmSnapshotId.',
+        inputSchema: {
+          snapshotId: z.string().uuid(),
+          confirmSnapshotId: z.string().uuid()
+        },
+        outputSchema: responseSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: false
+        }
+      },
+      async ({ snapshotId, confirmSnapshotId }) => {
+        const active = this.requireActiveProject();
+        if (!active.success) return this.toToolResult(active.response);
+        return this.toToolResult(await active.project.backupManager.deleteBackup(
+          snapshotId,
+          confirmSnapshotId
+        ));
+      }
+    );
   }
 
-  private setupToolHandlers(): void {
-    // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: [
-          {
-            name: 'create_file_snapshot',
-            description: 'Create a file snapshot for instant backup and restore. Much faster than record_edit - uses direct file copying.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                filePath: {
-                  type: 'string',
-                  description: 'Absolute path to the file to snapshot'
-                },
-                prompt: {
-                  type: 'string',
-                  description: 'User prompt or description for this snapshot'
-                },
-                sessionId: {
-                  type: 'string',
-                  description: 'Optional session ID to group related snapshots',
-                  optional: true
-                },
-                metadata: {
-                  type: 'object',
-                  description: 'Optional metadata about the generation (model, temperature, etc.)',
-                  optional: true
-                }
-              },
-              required: ['filePath', 'prompt']
-            }
-          },
-          {
-            name: 'record_edit',
-            description: 'Legacy: Record a code edit for version history tracking. Note: create_file_snapshot is much faster.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                filePath: {
-                  type: 'string',
-                  description: 'Absolute path to the file being edited'
-                },
-                startLine: {
-                  type: 'number',
-                  description: 'Starting line number (1-based) of the edit'
-                },
-                endLine: {
-                  type: 'number',
-                  description: 'Ending line number (1-based) of the edit'
-                },
-                oldContent: {
-                  type: 'string',
-                  description: 'Original content that was replaced'
-                },
-                newContent: {
-                  type: 'string',
-                  description: 'New content that replaced the original'
-                },
-                prompt: {
-                  type: 'string',
-                  description: 'User prompt that led to this edit'
-                },
-                sessionId: {
-                  type: 'string',
-                  description: 'Optional session ID to group related edits',
-                  optional: true
-                },
-                metadata: {
-                  type: 'object',
-                  description: 'Optional metadata about the generation (model, temperature, etc.)',
-                  optional: true
-                }
-              },
-              required: ['filePath', 'startLine', 'endLine', 'oldContent', 'newContent', 'prompt']
-            }
-          },
-          {
-            name: 'restore_file_snapshot',
-            description: 'Restore a file from a snapshot. Instant file restore using direct file copying.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                snapshotId: {
-                  type: 'string',
-                  description: 'Snapshot ID to restore from'
-                }
-              },
-              required: ['snapshotId']
-            }
-          },
-          {
-            name: 'rollback_to_version',
-            description: 'Legacy: Rollback files to a previous version. Note: restore_file_snapshot is much faster.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'Session ID to rollback within'
-                },
-                editId: {
-                  type: 'string',
-                  description: 'Optional specific edit ID to rollback to. If not provided, rollback to session start.',
-                  optional: true
-                }
-              },
-              required: ['sessionId']
-            }
-          },
-          {
-            name: 'list_file_snapshots',
-            description: 'List AI-enhanced file snapshots with intelligent summaries for easy rollback selection. Shows snapshot time, modified files, and AI-generated summaries.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'Optional session ID to filter snapshots',
-                  optional: true
-                },
-                filePath: {
-                  type: 'string',
-                  description: 'Optional file path to filter snapshots',
-                  optional: true
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Optional limit on number of results (default 20 for better readability)',
-                  optional: true
-                },
-                format: {
-                  type: 'string',
-                  description: 'Output format: "detailed" (default) shows full info, "compact" shows summary only',
-                  optional: true
-                }
-              },
-              required: []
-            }
-          },
-          {
-            name: 'delete_file_snapshot',
-            description: 'Delete a specific file snapshot and its associated files. Use with caution as this operation cannot be undone.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                snapshotId: {
-                  type: 'string',
-                  description: 'ID of the snapshot to delete'
-                }
-              },
-              required: ['snapshotId']
-            }
-          },
-          {
-            name: 'list_history',
-            description: 'Legacy: List edit history for debugging. Note: list_file_snapshots is much faster.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'Optional session ID to filter history',
-                  optional: true
-                },
-                filePath: {
-                  type: 'string',
-                  description: 'Optional file path to filter history',
-                  optional: true
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Optional limit on number of results',
-                  optional: true
-                }
-              },
-              required: []
-            }
-          },
-          {
-            name: 'create_session',
-            description: 'Create a new editing session to group related changes. Useful for organizing different features or experiments.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                name: {
-                  type: 'string',
-                  description: 'Optional name for the session',
-                  optional: true
-                },
-                description: {
-                  type: 'string',
-                  description: 'Optional description of what this session is for',
-                  optional: true
-                }
-              },
-              required: []
-            }
-          },
-          {
-            name: 'get_current_session',
-            description: 'Get information about the current active session.',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-              required: []
-            }
-          },
-          {
-            name: 'get_diff',
-            description: 'Generate a diff between two edit versions to see what changed.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                fromEditId: {
-                  type: 'string',
-                  description: 'ID of the first edit'
-                },
-                toEditId: {
-                  type: 'string',
-                  description: 'ID of the second edit'
-                }
-              },
-              required: ['fromEditId', 'toEditId']
-            }
-          },
-          {
-            name: 'activate_project',
-            description: 'Activate a project for code tracking. Creates .CodeRecoder cache directory with structured data.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                projectPath: {
-                  type: 'string',
-                  description: 'Absolute path to the project directory'
-                },
-                projectName: {
-                  type: 'string',
-                  description: 'Optional custom name for the project',
-                  optional: true
-                },
-                language: {
-                  type: 'string',
-                  description: 'Optional programming language (auto-detected if not provided)',
-                  optional: true
-                }
-              },
-              required: ['projectPath']
-            }
-          },
-          {
-            name: 'deactivate_project',
-            description: 'Deactivate the current project and optionally save history.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                saveHistory: {
-                  type: 'boolean',
-                  description: 'Whether to save current history before deactivating',
-                  optional: true
-                }
-              },
-              required: []
-            }
-          },
-          {
-            name: 'list_projects',
-            description: 'List all available projects and show current active project.',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-              required: []
-            }
-          },
-          {
-            name: 'get_project_info',
-            description: 'Get detailed information about a project or the current active project.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                projectPath: {
-                  type: 'string',
-                  description: 'Optional project path. If not provided, returns current project info.',
-                  optional: true
-                }
-              },
-              required: []
-            }
-          },
-          {
-            name: 'create_project_snapshot',
-            description: 'Create a project-wide snapshot (like Cursor). Analyzes project changes using Serena and saves incrementally or fully based on save count.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                prompt: {
-                  type: 'string',
-                  description: 'Description of changes being saved'
-                },
-                name: {
-                  type: 'string',
-                  description: 'Optional user-friendly name for the snapshot (e.g., "Feature Complete", "Before Refactor")',
-                  optional: true
-                },
-                tags: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  description: 'Optional tags for categorizing snapshots (e.g., ["stable", "feature"])',
-                  optional: true
-                },
-                projectPath: {
-                  type: 'string',
-                  description: 'Optional project path. Uses current active project if not provided.',
-                  optional: true
-                }
-              },
-              required: ['prompt']
-            }
-          },
-          {
-            name: 'list_project_snapshots',
-            description: 'List all project snapshots with save numbers, types (incremental/full), and Serena analysis.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                format: {
-                  type: 'string',
-                  description: 'Output format: "detailed" (default) or "compact" for Cline',
-                  optional: true
-                }
-              },
-              required: []
-            }
-          },
-          {
-            name: 'restore_project_snapshot',
-            description: 'Restore entire project to a specific snapshot state.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                snapshotId: {
-                  type: 'string',
-                  description: 'ID of the snapshot to restore'
-                }
-              },
-              required: ['snapshotId']
-            }
+  private async activateProject(args: {
+    projectPath: string;
+    projectName?: string;
+    storageRoot?: string;
+    maxBackups?: number;
+    autoCheckpoint?: boolean;
+    debounceMs?: number;
+    reconciliationIntervalMs?: number;
+    excludeNames?: string[];
+  }): Promise<BackupResponse> {
+    return await this.runLifecycleOperation(async () => await this.performActivateProject(args));
+  }
+
+  private async performActivateProject(args: {
+    projectPath: string;
+    projectName?: string;
+    storageRoot?: string;
+    maxBackups?: number;
+    autoCheckpoint?: boolean;
+    debounceMs?: number;
+    reconciliationIntervalMs?: number;
+    excludeNames?: string[];
+  }): Promise<BackupResponse> {
+    const manager = new BackupManager();
+    let watcher: AutoCheckpointManager | undefined;
+
+    try {
+      await manager.initialize(args.projectPath, {
+        storageRoot: args.storageRoot,
+        maxBackups: args.maxBackups,
+        excludeNames: args.excludeNames
+      });
+
+      if (args.autoCheckpoint ?? true) {
+        watcher = new AutoCheckpointManager(manager, {
+          debounceMs: args.debounceMs,
+          reconciliationIntervalMs: args.reconciliationIntervalMs,
+          onCheckpoint: response => {
+            const level = response.success ? 'completed' : 'failed';
+            console.error(`Automatic checkpoint ${level}: ${response.message}`);
           }
-        ] as Tool[]
-      };
-    });
+        });
+        await watcher.start();
+      }
 
-    // Handle tool calls
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
+      const activationCheckpoint = await manager.createBackup({
+        name: `Activation checkpoint ${new Date().toISOString()}`,
+        prompt: 'Verified baseline created when the project was activated',
+        tags: ['activation'],
+        trigger: 'activation',
+        skipIfUnchanged: true
+      });
+      if (!activationCheckpoint.success) {
+        await watcher?.stop();
+        return {
+          success: false,
+          message: 'Project activation failed because the baseline backup could not be verified',
+          error: activationCheckpoint.error ?? activationCheckpoint.message
+        };
+      }
 
-      try {
-        let result: ToolResponse;
-
-        switch (name) {
-          case 'create_file_snapshot':
-            result = await this.handleCreateSnapshot(args as unknown as any);
-            break;
-
-          case 'restore_file_snapshot':
-            result = await this.handleRestoreSnapshot(args as unknown as any);
-            break;
-
-          case 'list_file_snapshots':
-            result = await this.handleListSnapshots(args as unknown as any);
-            break;
-
-          case 'delete_file_snapshot':
-            result = await this.handleDeleteSnapshot(args as unknown as any);
-            break;
-
-          case 'record_edit':
-            result = await this.handleRecordEdit(args as unknown as RecordEditParams);
-            break;
-
-          case 'rollback_to_version':
-            result = await this.handleRollback(args as unknown as RollbackParams);
-            break;
-
-          case 'list_history':
-            result = await this.handleListHistory(args as unknown as ListHistoryParams);
-            break;
-
-          case 'create_session':
-            result = await this.handleCreateSession(args as unknown as CreateSessionParams);
-            break;
-
-          case 'get_current_session':
-            result = await this.handleGetCurrentSession();
-            break;
-
-          case 'get_diff':
-            result = await this.handleGetDiff(args as unknown as GetDiffParams);
-            break;
-
-          case 'activate_project':
-            result = await this.handleActivateProject(args as unknown as ActivateProjectParams);
-            break;
-
-          case 'deactivate_project':
-            result = await this.handleDeactivateProject(args as unknown as DeactivateProjectParams);
-            break;
-
-          case 'list_projects':
-            result = await this.handleListProjects();
-            break;
-
-          case 'get_project_info':
-            result = await this.handleGetProjectInfo(args as unknown as GetProjectInfoParams);
-            break;
-
-          case 'create_project_snapshot':
-            result = await this.handleCreateProjectSnapshot(args as unknown as any);
-            break;
-
-          case 'list_project_snapshots':
-            result = await this.handleListProjectSnapshots(args as unknown as any);
-            break;
-
-          case 'restore_project_snapshot':
-            result = await this.handleRestoreProjectSnapshot(args as unknown as any);
-            break;
-
-          default:
-            result = {
-              success: false,
-              message: `Unknown tool: ${name}`,
-              error: `Tool '${name}' is not recognized`
-            };
+      if (this.activeProject) {
+        const deactivation = await this.performDeactivateProject(true);
+        if (!deactivation.success) {
+          await watcher?.stop();
+          return {
+            success: false,
+            message: 'New project baseline was created, but the previous project could not be safely deactivated',
+            error: deactivation.error ?? deactivation.message
+          };
         }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(result, null, 2)
-            }
-          ]
-        };
-
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`Error handling tool ${name}:`, error);
-        
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: false,
-                message: `Error executing ${name}`,
-                error: errorMessage
-              }, null, 2)
-            }
-          ],
-          isError: true
-        };
       }
-    });
-  }
+      const root = manager.getProjectRoot();
+      this.activeProject = {
+        name: args.projectName ?? path.basename(root),
+        root,
+        activatedAt: Date.now(),
+        backupManager: manager,
+        autoCheckpoint: watcher
+      };
 
-  private async handleRecordEdit(params: RecordEditParams): Promise<ToolResponse> {
-    return await this.historyManager.recordEdit(
-      params.filePath,
-      params.startLine,
-      params.endLine,
-      params.oldContent,
-      params.newContent,
-      params.prompt,
-      params.sessionId,
-      undefined, // parentEditId - could be added later for branching
-      params.metadata
-    );
-  }
-
-  private async handleRollback(params: RollbackParams): Promise<ToolResponse> {
-    return await this.historyManager.rollback(params.target);
-  }
-
-  private async handleListHistory(params: ListHistoryParams): Promise<ToolResponse> {
-    return await this.historyManager.getHistory(
-      params.sessionId,
-      params.filePath,
-      params.limit
-    );
-  }
-
-  private async handleCreateSession(params: CreateSessionParams): Promise<ToolResponse> {
-    return await this.historyManager.createSession(params.name, params.description);
-  }
-
-  private async handleGetCurrentSession(): Promise<ToolResponse> {
-    return await this.historyManager.getCurrentSession();
-  }
-
-  private async handleGetDiff(params: GetDiffParams): Promise<ToolResponse> {
-    return await this.historyManager.getDiff(params.fromEditId, params.toEditId);
-  }
-
-  private async handleActivateProject(params: ActivateProjectParams): Promise<ToolResponse> {
-    const result = await this.projectManager.activateProject(
-      params.projectPath,
-      params.projectName,
-      params.language
-    );
-
-    if (result.success && result.data?.cacheDirectory) {
-      // Update all managers to use the new cache directory
-      console.error(`🔄 同步所有管理器到项目: ${result.data.cacheDirectory}`);
-      await this.historyManager.updateCacheDirectory(result.data.cacheDirectory);
-      await this.snapshotManager.updateCacheDirectory(result.data.cacheDirectory);
-      await this.projectSnapshotManager.updateCacheDirectory(result.data.cacheDirectory);
-      console.error(`✅ 所有管理器同步完成`);
-
-    }
-
-    return result;
-  }
-
-  private async ensureSnapshotManagerSync(): Promise<void> {
-    try {
-      const projectInfo = await this.projectManager.getProjectInfo();
-      if (projectInfo.success && projectInfo.data?.project?.cacheDirectory) {
-        // 确保同步所有管理器到当前项目
-        await this.historyManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-        await this.snapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-        await this.projectSnapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-        console.error(`🔄 所有管理器已同步到项目: ${projectInfo.data.project.cacheDirectory}`);
-      } else {
-        console.warn('⚠️ 无法获取项目信息进行同步');
-      }
-    } catch (error) {
-      console.warn('管理器同步警告:', error);
-    }
-  }
-
-
-  // New high-performance snapshot handlers
-  private async handleCreateSnapshot(params: any): Promise<ToolResponse> {
-    // 确保快照管理器同步到当前项目
-    await this.ensureSnapshotManagerSync();
-    
-    return await this.snapshotManager.createSnapshot(
-      params.filePath,
-      params.prompt,
-      params.sessionId,
-      undefined, // parentSnapshotId
-      params.metadata
-    );
-  }
-
-  private async handleRestoreSnapshot(params: any): Promise<ToolResponse> {
-    return await this.snapshotManager.restoreSnapshot(params.snapshotId);
-  }
-
-  private async handleDeleteSnapshot(params: any): Promise<ToolResponse> {
-    return await this.snapshotManager.deleteSnapshot(params.snapshotId);
-  }
-
-  private async handleListSnapshots(params: any): Promise<ToolResponse> {
-    // 确保项目已激活并同步
-    const projectInfo = await this.projectManager.getProjectInfo();
-    if (projectInfo.success && projectInfo.data?.project?.cacheDirectory) {
-      console.error(`📸 准备同步快照管理器到: ${projectInfo.data.project.cacheDirectory}`);
-      await this.snapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-      console.error(`📸 快照管理器已同步完成`);
-    } else {
-      console.error(`⚠️ 无法获取项目信息，使用默认配置`);
-    }
-
-    console.error(`📋 开始获取快照列表...`);
-    const result = await this.snapshotManager.listSnapshots(
-      params.sessionId,
-      params.filePath,
-      params.limit || 20
-    );
-    console.error(`📋 快照列表结果: 成功=${result.success}, 快照数量=${result.data?.snapshots?.length || 0}`);
-
-    if (!result.success) {
-      return result;
-    }
-
-    // Enhanced formatting for Cline display
-    const format = params.format || 'detailed';
-    const snapshots = result.data.snapshots || [];
-
-    if (snapshots.length === 0) {
+      const automaticStatus = watcher?.getStatus() ?? {
+        state: 'stopped',
+        lastError: null
+      };
+      const degraded = automaticStatus.state === 'degraded';
       return {
         success: true,
-        message: '📸 暂无AI增强快照记录\n\n💡 使用 create_file_snapshot 工具创建带有AI分析的文件快照',
-        data: result.data
+        message: degraded
+          ? 'Project activated with degraded automatic monitoring; inspect automaticCheckpoint.lastError'
+          : 'Project activated with a verified baseline backup',
+        data: {
+          state: degraded ? 'active_degraded' : 'active',
+          projectName: this.activeProject.name,
+          projectRoot: root,
+          storageRoot: manager.getStorageRoot(),
+          activationCheckpoint: activationCheckpoint.data ?? {},
+          automaticCheckpoint: {
+            enabled: watcher !== undefined,
+            ...automaticStatus
+          }
+        }
+      };
+    } catch (error) {
+      await watcher?.stop().catch(() => undefined);
+      return this.failure('Failed to activate project backup', error);
+    }
+  }
+
+  private async deactivateProject(createFinalCheckpoint: boolean): Promise<BackupResponse> {
+    return await this.runLifecycleOperation(
+      async () => await this.performDeactivateProject(createFinalCheckpoint)
+    );
+  }
+
+  private async performDeactivateProject(createFinalCheckpoint: boolean): Promise<BackupResponse> {
+    const project = this.activeProject;
+    if (!project) {
+      return {
+        success: true,
+        message: 'No project is active in this MCP process',
+        data: { state: 'inactive', hadActiveProject: false }
       };
     }
 
-    let displayText = '';
-    
-    if (format === 'compact') {
-      displayText = `📸 AI增强快照列表 (${snapshots.length}个)\n\n`;
-      snapshots.forEach((snapshot: any, index: number) => {
-        const time = new Date(snapshot.timestamp).toLocaleString('zh-CN');
-        const complexityMap: { [key: string]: string } = { 'low': '🟢', 'medium': '🟡', 'high': '🔴' };
-        const complexity = complexityMap[snapshot.complexity] || '🟡';
-        displayText += `${index + 1}. ${complexity} ${snapshot.aiSummary || snapshot.prompt}\n`;
-        displayText += `   📁 ${snapshot.fileName} | ⏰ ${time.split(' ')[1]}\n\n`;
-      });
-    } else {
-      displayText = `🤖 AI增强快照详细列表\n`;
-      displayText += `📊 总计: ${snapshots.length}个快照，${result.data.totalSessions}个会话\n\n`;
-      
-      snapshots.forEach((snapshot: any, index: number) => {
-        const time = new Date(snapshot.timestamp).toLocaleString('zh-CN');
-        const complexityMap: { [key: string]: string } = { 'low': '🟢 低', 'medium': '🟡 中', 'high': '🔴 高' };
-        const complexity = complexityMap[snapshot.complexity] || '🟡 中';
-        const aiFlags = [];
-        if (snapshot.aiEnhanced) aiFlags.push('🤖 AI增强');
-        if (snapshot.serenaUsed) aiFlags.push('🔍 Serena');
-        if (snapshot.llmUsed) aiFlags.push('🧠 LLM');
-        
-        displayText += `━━━ 快照 ${index + 1} ━━━\n`;
-        displayText += `📸 ID: ${snapshot.id.substring(0, 8)}...\n`;
-        displayText += `🧠 智能摘要: ${snapshot.aiSummary || snapshot.prompt}\n`;
-        displayText += `📁 文件: ${snapshot.fileName} (${Math.round(snapshot.fileSize / 1024)}KB)\n`;
-        displayText += `⏰ 时间: ${time}\n`;
-        displayText += `📊 复杂度: ${complexity}\n`;
-        displayText += `🎯 意图: ${snapshot.intent}\n`;
-        displayText += `🔍 影响: ${snapshot.impact}\n`;
-        displayText += `✨ AI功能: ${aiFlags.join(', ')}\n`;
-        
-        if (snapshot.changeAnalysis) {
-          const { added, deleted, modified } = snapshot.changeAnalysis;
-          if (added > 0 || deleted > 0 || modified > 0) {
-            displayText += `📈 变更: +${added} -${deleted} ~${modified} 行\n`;
+    let finalCheckpoint: BackupResponse | undefined;
+    try {
+      await project.autoCheckpoint?.pause(true);
+      if (createFinalCheckpoint) {
+        finalCheckpoint = await project.backupManager.createBackup({
+          name: `Deactivation checkpoint ${new Date().toISOString()}`,
+          prompt: 'Final verified checkpoint before automatic monitoring stopped',
+          tags: ['deactivation'],
+          trigger: 'manual',
+          skipIfUnchanged: true
+        });
+      }
+      await project.autoCheckpoint?.stop();
+      this.activeProject = undefined;
+
+      if (finalCheckpoint && !finalCheckpoint.success) {
+        return {
+          success: false,
+          message: 'Project was deactivated, but the final checkpoint failed',
+          error: finalCheckpoint.error ?? finalCheckpoint.message,
+          data: {
+            state: 'inactive_degraded',
+            hadActiveProject: true,
+            projectRoot: project.root
           }
+        };
+      }
+
+      return {
+        success: true,
+        message: 'Project backup deactivated and automatic monitoring stopped',
+        data: {
+          state: 'inactive',
+          hadActiveProject: true,
+          projectRoot: project.root,
+          finalCheckpoint: finalCheckpoint?.data ?? null
         }
-        
-        displayText += `\n💡 恢复命令: restore_file_snapshot {"snapshotId": "${snapshot.id}"}\n\n`;
+      };
+    } catch (error) {
+      await project.autoCheckpoint?.stop().catch(() => undefined);
+      this.activeProject = undefined;
+      return this.failure('Project deactivation encountered an error', error, {
+        state: 'inactive_degraded',
+        projectRoot: project.root
       });
-      
-      displayText += `📱 Web界面: http://localhost:3001 (可视化管理)\n`;
-      displayText += `⚡ 快速恢复: 选择上方任一快照ID使用 restore_file_snapshot 工具`;
     }
+  }
+
+  private async getBackupStatus(): Promise<BackupResponse> {
+    const active = this.requireActiveProject();
+    if (!active.success) return active.response;
+
+    const response = await active.project.backupManager.getStatus();
+    if (!response.success) return response;
+    return {
+      ...response,
+      data: {
+        ...response.data,
+        activeProject: {
+          name: active.project.name,
+          root: active.project.root,
+          activatedAt: active.project.activatedAt,
+          scope: 'this-mcp-process'
+        },
+        automaticCheckpoint: active.project.autoCheckpoint
+          ? {
+              enabled: true,
+              ...active.project.autoCheckpoint.getStatus()
+            }
+          : {
+              enabled: false,
+              state: 'stopped',
+              lastError: null
+            }
+      }
+    };
+  }
+
+  private async restoreProject(snapshotId: string, confirmationToken: string): Promise<BackupResponse> {
+    const active = this.requireActiveProject();
+    if (!active.success) return active.response;
+
+    const watcher = active.project.autoCheckpoint;
+    try {
+      await watcher?.pause(true);
+      const response = await active.project.backupManager.restoreBackup(
+        snapshotId,
+        confirmationToken
+      );
+      return {
+        ...response,
+        data: response.data
+          ? {
+              ...response.data,
+              automaticCheckpointEvents: 'discarded-during-restore'
+            }
+          : response.data
+      };
+    } catch (error) {
+      return this.failure('Failed to coordinate project restore', error);
+    } finally {
+      try {
+        watcher?.resume(true);
+      } catch (error) {
+        console.error('Failed to resume automatic checkpoints:', error);
+      }
+    }
+  }
+
+  private requireActiveProject():
+    | { success: true; project: ActiveProject }
+    | { success: false; response: BackupResponse } {
+    if (this.activeProject) return { success: true, project: this.activeProject };
+    return {
+      success: false,
+      response: {
+        success: false,
+        message: 'No project is active in this MCP process',
+        error: 'Call activate_project before using backup tools'
+      }
+    };
+  }
+
+  private toToolResult(response: BackupResponse): CallToolResult {
+    const structuredContent: Record<string, unknown> = {
+      success: response.success,
+      message: response.message
+    };
+    if (response.data !== undefined) structuredContent.data = response.data;
+    if (response.error !== undefined) structuredContent.error = response.error;
 
     return {
-      success: true,
-      message: displayText,
-      data: result.data
+      content: [{
+        type: 'text',
+        text: JSON.stringify(structuredContent, null, 2)
+      }],
+      structuredContent,
+      isError: !response.success
     };
   }
 
-  private async handleDeactivateProject(params: DeactivateProjectParams): Promise<ToolResponse> {
-    return await this.projectManager.deactivateProject(params.saveHistory ?? true);
-  }
-
-  private async handleListProjects(): Promise<ToolResponse> {
-    return await this.projectManager.listProjects();
-  }
-
-  private async handleGetProjectInfo(params: GetProjectInfoParams): Promise<ToolResponse> {
-    return await this.projectManager.getProjectInfo(params.projectPath);
-  }
-
-  private setupErrorHandling(): void {
-    this.server.onerror = (error) => {
-      console.error('[MCP Error]', error);
+  private failure(
+    message: string,
+    error: unknown,
+    data?: Record<string, unknown>
+  ): BackupResponse {
+    return {
+      success: false,
+      message,
+      error: error instanceof Error ? error.message : String(error),
+      data
     };
-
-    process.on('SIGINT', async () => {
-      await this.server.close();
-      process.exit(0);
-    });
   }
 
-  // Project Snapshot handlers (Cursor-style)
-  private async handleCreateProjectSnapshot(params: any): Promise<ToolResponse> {
-    // 确保管理器状态同步
-    await this.initializeManagers();
-    await this.ensureProjectSnapshotManagerSync();
-    
-    // 首先尝试从参数获取项目路径
-    let projectPath = params.projectPath;
-    
-    // 如果没有提供，尝试从项目管理器获取
-    if (!projectPath) {
-      projectPath = this.projectManager.getCurrentProjectRoot();
-    }
-    
-    // 如果仍然没有，尝试从项目管理器的项目信息获取
-    if (!projectPath) {
-      const projectInfo = await this.projectManager.getProjectInfo();
-      if (projectInfo.success && projectInfo.data?.project) {
-        projectPath = projectInfo.data.project.projectRoot;
-      }
-    }
-    
-    // 如果还是没有，直接使用项目快照管理器的项目根路径
-    if (!projectPath && this.projectSnapshotManager) {
-      projectPath = this.projectSnapshotManager.getProjectRoot();
-    }
-    
-    if (!projectPath) {
-      return {
-        success: false,
-        message: 'No active project. Please activate a project first.'
-      };
-    }
-    
-    return await this.projectSnapshotManager.createProjectSnapshot(projectPath, params.prompt, params.name, params.tags);
-  }
-
-  private async handleListProjectSnapshots(params: any): Promise<ToolResponse> {
-    await this.ensureProjectSnapshotManagerSync();
-    
-    const result = await this.projectSnapshotManager.listProjectSnapshots();
-    
-    if (result.success) {
-      // Format for enhanced display
-      const snapshots = result.data?.snapshots || [];
-      const summary = result.data?.summary || {};
-      
-      let display = `🗂️ 项目快照历史 (共 ${summary.total} 个快照)\n`;
-      display += `📊 统计: ${summary.full} 个全量快照, ${summary.incremental} 个增量快照\n`;
-      display += `🔢 当前保存次数: ${summary.currentSave}, 最后全量保存: ${summary.lastFullSave}\n\n`;
-      
-      if (snapshots.length === 0) {
-        display += "❌ 暂无项目快照\n";
-        display += "💡 使用 create_project_snapshot 创建第一个快照\n";
-      } else {
-        display += "🕒 快照列表 (按时间倒序):\n\n";
-        
-        snapshots.forEach((snapshot: any, index: number) => {
-          const typeEmoji = snapshot.type === 'full' ? '📦' : '📄';
-          const complexityEmoji: { [key: string]: string } = { low: '🟢', medium: '🟡', high: '🔴' };
-          
-          display += `${index + 1}. ${snapshot.name || snapshot.id.substring(0, 8)}\n`;
-          display += `   🆔 ID: ${snapshot.id.substring(0, 8)}...\n`;
-          display += `   📅 时间: ${snapshot.displayTime} (${snapshot.timeSince})\n`;
-          display += `   💬 描述: ${snapshot.prompt}\n`;
-          
-          if (snapshot.tags && snapshot.tags.length > 0) {
-            display += `   🏷️  标签: ${snapshot.tags.join(', ')}\n`;
-          }
-          
-          if (snapshot.serenaAnalysis) {
-            display += `   🤖 AI分析: ${snapshot.serenaAnalysis.summary}\n`;
-            display += `   🎯 复杂度: ${complexityEmoji[snapshot.serenaAnalysis.complexity] || '⚪'} ${snapshot.serenaAnalysis.complexity}\n`;
-          }
-          
-          const actualFileCount = snapshot.metadata?.actualFileCount;
-          if (actualFileCount !== undefined) {
-            display += `   📁 实际文件: ${actualFileCount} 个文件\n`;
-          } else {
-            display += `   📁 变更文件: ${snapshot.changedFiles.length > 0 ? snapshot.changedFiles.length + ' 个文件' : '无变更'}\n`;
-          }
-          
-          if (snapshot.dependencies && snapshot.dependencies.length > 0) {
-            display += `   🔗 依赖快照: ${snapshot.dependencies.length} 个 (需要按顺序恢复)\n`;
-          }
-          
-          display += `   📏 大小: ${snapshot.sizeInfo.estimatedSize}\n`;
-          
-          // 恢复提示
-          if (snapshot.type === 'full') {
-            display += `   ✅ 可直接恢复 (独立快照)\n`;
-          } else {
-            display += `   ⚠️  需连续恢复 (依赖 ${snapshot.dependencies.length} 个前置快照)\n`;
-          }
-          
-          display += `\n`;
-        });
-        
-        display += "💡 使用 restore_project_snapshot 恢复快照\n";
-        display += "⚠️  增量快照需要按依赖顺序恢复，系统会自动处理\n";
-      }
-      
-      return {
-        success: true,
-        message: display,
-        data: result.data
-      };
-    }
-    
-    return result;
-  }
-
-  private async handleRestoreProjectSnapshot(params: any): Promise<ToolResponse> {
-    await this.ensureProjectSnapshotManagerSync();
-    
-    return await this.projectSnapshotManager.restoreProjectSnapshot(params.snapshotId);
-  }
-
-
-  private async ensureProjectSnapshotManagerSync(): Promise<void> {
-    try {
-      const projectInfo = await this.projectManager.getProjectInfo();
-      if (projectInfo.success && projectInfo.data?.project?.cacheDirectory) {
-        // 同步项目快照管理器
-        await this.projectSnapshotManager.updateCacheDirectory(projectInfo.data.project.cacheDirectory);
-        
-        // 更新项目管理器的当前项目根路径
-        const projectRoot = projectInfo.data.project.projectRoot;
-        if (projectRoot) {
-          this.projectManager.setCurrentProjectRoot(projectRoot);
-        }
-        
-        console.error(`🔄 项目快照管理器已同步: ${projectInfo.data.project.cacheDirectory}`);
-      } else {
-        console.warn('⚠️ 无法获取项目信息进行同步:', projectInfo);
-      }
-    } catch (error) {
-      console.warn('项目快照管理器同步警告:', error);
-    }
-  }
-
-  async start(): Promise<void> {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error('CodeRecoder MCP Server running on stdio');
+  private async runLifecycleOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const scheduled = this.lifecycleTail.then(operation, operation);
+    this.lifecycleTail = scheduled.then(() => undefined, () => undefined);
+    return await scheduled;
   }
 }
 
-// Start the server
-const server = new CodeRecoderServer();
-server.start().catch((error) => {
-  console.error('Failed to start server:', error);
-  process.exit(1);
-});
+export async function startStdioServer(): Promise<CodeRecoderServer> {
+  const server = new CodeRecoderServer();
+  await server.connect(new StdioServerTransport());
+  console.error(`CodeRecoder MCP ${SERVER_VERSION} running on stdio`);
+  return server;
+}
+
+const entrypoint = process.argv[1]
+  ? pathToFileURL(path.resolve(process.argv[1])).href
+  : undefined;
+
+if (entrypoint === import.meta.url) {
+  let runningServer: CodeRecoderServer | undefined;
+  let shuttingDown = false;
+
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await runningServer?.close();
+  };
+
+  process.once('SIGINT', () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+  process.once('SIGTERM', () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+  process.stdin.once('end', () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+
+  startStdioServer()
+    .then(server => {
+      runningServer = server;
+    })
+    .catch(error => {
+      console.error('CodeRecoder MCP failed to start:', error);
+      process.exit(1);
+    });
+}

@@ -1,532 +1,378 @@
-# CodeRecoder MCP
+# CodeRecoder
 
-<div align="center">
+CodeRecoder 是一个本地优先的代码备份与可验证恢复系统，同时提供 MCP 服务和 Vue 3 + Electron 桌面控制台。它面向 Codex、Claude Code 及其他支持 MCP 的开发工具，也可以作为独立桌面小窗运行。
 
-![CodeRecoder Logo](https://img.shields.io/badge/CodeRecoder-AI%20Code%20Versioning-blue?style=for-the-badge&logo=git&logoColor=white)
+当前版本：`3.0.0`
 
-**智能代码版本管理系统 - 基于MCP协议的AI增强代码快照与恢复工具**
+> CodeRecoder 不替代 Git。Git 负责协作、审查、分支和发布历史；CodeRecoder 负责在 AI 编程和高频修改过程中自动保留可恢复副本，并在恢复前后提供完整性证据。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![MCP Protocol](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green)](https://modelcontextprotocol.io/)
-[![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=node.js&logoColor=white)](https://nodejs.org/)
+## 核心能力
 
-</div>
+| 能力 | 当前实现 |
+| --- | --- |
+| 完整工程备份 | 每个快照都是逻辑完整、可独立恢复的文件树 |
+| 存储去重 | 未变化的普通文件通过硬链接复用，变化文件写入新副本 |
+| 完整性证据 | SHA-256 清单记录路径、类型、内容、权限、大小和整棵树哈希 |
+| 自动检查点 | `chokidar` 监听、防抖合并、备份期间排队和周期性对账 |
+| 安全恢复 | 强制预览、短期确认令牌、恢复前安全快照、恢复后校验 |
+| 自动回滚 | 恢复失败时回到操作前状态；进程中断后可在下次初始化时恢复 |
+| 并发协调 | 存储锁与工程锁带心跳、超时和失效锁恢复 |
+| 双控制入口 | stdio MCP 服务与 Vue 3/Electron 桌面控制台复用同一备份内核 |
 
-## 🌟 项目简介
+## 架构
 
-CodeRecoder是一个基于**Model Context Protocol (MCP)**的智能代码版本管理系统，专为AI辅助编程设计。它提供了类似Cursor编辑器的多轮生成和撤销功能，支持瞬间文件快照、项目级版本控制、智能变更检测和AI增强的代码分析。
-
-### ✨ 核心特性
-
-- 🚀 **瞬间快照** - 基于直接文件复制的高性能快照系统
-- 🧠 **AI增强分析** - 集成Serena代码分析，智能识别代码变更和复杂度
-- 📦 **项目级版本控制** - 类似Cursor的增量/全量快照策略
-- 🔍 **智能变更检测** - 四重检测机制：Git状态、文件统计、内容哈希、时间戳
-- 🏷️ **快照标签系统** - 用户友好的快照命名和分类
-- 🔗 **智能链式恢复** - 增量快照依赖关系自动处理
-- 📊 **结构化数据管理** - 项目独立的`.CodeRecoder`目录结构
-- 🛡️ **安全恢复机制** - 验证快照内容，防止意外数据丢失
-
-## 🛠 技术架构
-
-### 系统组件
-
-```
-CodeRecoder MCP Server
-├── 📁 Core Managers
-│   ├── ProjectManager        # 项目激活与配置管理
-│   ├── FileSnapshotManager   # 单文件快照管理
-│   ├── ProjectSnapshotManager# 项目级快照管理
-│   └── HistoryManager        # 传统编辑历史管理
-├── 🔍 Analysis Services
-│   └── AIAnalysisService     # AI代码分析集成
-├── 📊 Data Structure
-│   └── DataStructureManager  # 结构化数据管理
-└── 🌐 MCP Interface
-    └── CodeRecoderServer     # MCP协议服务器
+```mermaid
+flowchart TB
+  A[Codex / Claude Code / MCP 客户端] -->|stdio JSON-RPC| B[CodeRecoderServer]
+  C[Vue 3 Renderer] -->|类型化白名单 IPC| D[Electron Preload / Main]
+  D --> E[DesktopBackupController]
+  B --> F[BackupManager]
+  E --> F
+  B --> G[AutoCheckpointManager]
+  E --> G
+  G --> F
+  F --> H[SHA-256 清单与完整快照]
+  F --> I[跨进程工程锁与存储锁]
+  H --> J[工程内存储或外部备份介质]
 ```
 
-### 数据存储结构
+- `BackupManager` 是唯一生产备份内核，负责扫描、快照、清单、验证、保留策略、恢复和启动恢复。
+- `AutoCheckpointManager` 只负责监听和调度，最终仍通过 `BackupManager` 创建经过验证的完整快照。
+- MCP 与桌面端分别维护进程内激活状态，不会持久化或争用一个全局“当前工程”。
+- 两个入口同时保护同一工程时，工程级跨进程锁会串行化写入和恢复操作。
 
-每个项目在其根目录下维护独立的`.CodeRecoder`目录：
+## 系统要求
 
-```
-.CodeRecoder/
-├── config/                   # 项目配置
-│   ├── project.json         # 项目元信息
-│   ├── settings.json        # 用户设置
-│   └── cache.json          # 缓存配置
-├── snapshots/               # 快照存储
-│   ├── files/              # 文件快照
-│   │   ├── [sessionId]/    # 会话分组
-│   │   └── sessions.json   # 会话索引
-│   ├── projects/           # 项目快照
-│   │   ├── [snapshotId]/   # 完整项目副本
-│   │   └── index.json      # 快照索引
-│   └── snapshots.json      # 文件快照数据
-├── history/                # 编辑历史
-│   ├── edits.json         # 编辑记录
-│   └── sessions.json      # 会话历史
-├── analysis/              # AI分析缓存
-│   ├── ai_summaries.json  # AI分析结果
-│   └── code_metrics.json # 代码指标
-└── logs/                  # 系统日志
-    ├── debug.log         # 调试日志
-    └── error.log         # 错误日志
-```
+- Node.js `22.12.0` 或更高版本
+- npm
+- 桌面端需要可用的图形会话
+- 完整测试使用操作系统临时目录；旧版 shell 迁移测试依赖 Bash/Linux 工具
 
-## 🚀 快速开始
+## 安装
 
-### 环境要求
-
-- **Node.js** >= 18.0.0
-- **TypeScript** >= 5.3.0
-- **Git** (用于变更检测)
-- **MCP兼容的AI助手** (如Claude Desktop、Cline等)
-
-### 安装步骤
-
-1. **克隆仓库**
 ```bash
-git clone https://github.com/yourusername/CodeRecoder.git
+git clone https://github.com/snow-wind-001/CodeRecoder.git
 cd CodeRecoder
-```
-
-2. **安装依赖**
-```bash
 npm install
+npm run lint
+npm test
 ```
 
-3. **构建项目**
+`npm test` 会构建 MCP 服务、检查桌面 TypeScript，并运行备份、恢复、并发、自动检查点、MCP 生命周期、stdio 和桌面控制器测试。
+
+## 快速开始：桌面控制台
+
+```bash
+npm run desktop:start
+```
+
+首次启动后：
+
+1. 选择需要保护的工程目录。
+2. 选择外部备份根目录；推荐使用独立磁盘或专用备份目录。
+3. 决定是否启用自动检查点，并设置普通快照保留数量。
+4. 点击“启动保护”，等待基线备份创建并通过校验。
+
+桌面窗口默认内容尺寸为 `424×880`，宽度限制为 `380–560px`，适合放在编辑器旁边。界面提供：
+
+- 自动检查点健康度和未备份变更提示；
+- 快照时间线、变更数量、逻辑大小、新增占用和树哈希摘要；
+- 手动创建备份和重新验证完整性；
+- `exact`/`overlay` 恢复预览、受影响路径和令牌倒计时；
+- 恢复成功、恢复拒绝、自动回滚或回滚失败的明确状态。
+
+桌面端不提供永久删除按钮；删除备份仍需通过 MCP 工具进行双 ID 确认。更多说明见 [`desktop/README.md`](./desktop/README.md)。
+
+### 桌面开发命令
+
+```bash
+npm run desktop:dev       # 构建内核并启动 Electron/Vite 热更新
+npm run desktop:renderer  # 只启动浏览器渲染层，供界面开发使用
+npm run desktop:typecheck # 检查 renderer、preload 和 Electron 主进程
+npm run desktop:build     # 生产构建到 dist-desktop/
+npm run test:desktop      # 桌面控制器集成测试
+```
+
+## 快速开始：连接 MCP 客户端
+
+先构建 stdio 服务：
+
 ```bash
 npm run build
 ```
 
-4. **配置MCP客户端**
-
-在Claude Desktop配置文件中添加：
-```json
-{
-  "mcpServers": {
-    "coderecoder": {
-      "command": "node",
-      "args": ["/path/to/CodeRecoder/dist/index.js"],
-      "cwd": "/path/to/CodeRecoder"
-    }
-  }
-}
-```
-
-5. **启动服务**
-```bash
-npm start
-```
-
-### 快速测试
+### Codex CLI / IDE
 
 ```bash
-# 激活项目
-activate_project {"projectPath": "/path/to/your/project"}
-
-# 创建文件快照
-create_file_snapshot {
-  "filePath": "/path/to/file.js",
-  "prompt": "添加新功能前的备份"
-}
-
-# 创建项目快照
-create_project_snapshot {
-  "prompt": "功能开发完成",
-  "name": "Feature v1.0",
-  "tags": ["stable", "feature"]
-}
-
-# 列出快照
-list_project_snapshots {}
-
-# 恢复快照
-restore_project_snapshot {"snapshotId": "your-snapshot-id"}
+codex mcp add coderecoder -- node /absolute/path/CodeRecoder/dist/index.js
+codex mcp list
 ```
 
-## 📖 MCP工具API
+也可以在 `~/.codex/config.toml` 中配置：
 
-### 项目管理
-
-#### `activate_project`
-激活项目进行代码跟踪，创建结构化的`.CodeRecoder`目录。
-
-```typescript
-{
-  "projectPath": string,     // 项目根目录路径
-  "projectName"?: string,    // 可选项目名称
-  "language"?: string        // 可选编程语言
-}
+```toml
+[mcp_servers.coderecoder]
+command = "node"
+args = ["/absolute/path/CodeRecoder/dist/index.js"]
+cwd = "/absolute/path/CodeRecoder"
 ```
 
-#### `deactivate_project`
-停用当前项目并可选择性保存历史记录。
+### Claude Code
 
-#### `list_projects`
-列出所有可用项目和当前激活的项目。
-
-#### `get_project_info`
-获取项目的详细信息。
-
-### 文件快照管理
-
-#### `create_file_snapshot`
-为单个文件创建瞬间快照，支持AI分析。
-
-```typescript
-{
-  "filePath": string,        // 文件路径
-  "prompt": string,          // 快照描述
-  "sessionId"?: string,      // 可选会话ID
-  "metadata"?: object        // 可选元数据
-}
+```bash
+claude mcp add --scope user coderecoder -- node /absolute/path/CodeRecoder/dist/index.js
+claude mcp list
 ```
 
-#### `restore_file_snapshot`
-从快照恢复文件，支持即时恢复。
+其他 MCP 客户端使用等价的 stdio 配置即可。stdout 专用于 MCP JSON-RPC，所有诊断信息写入 stderr。不要在包装脚本中把普通日志输出到 stdout。
 
-```typescript
-{
-  "snapshotId": string       // 快照ID
-}
-```
+更多配置示例和批准策略见 [`MCP_CONFIG_GUIDE.md`](./MCP_CONFIG_GUIDE.md)。
 
-#### `list_file_snapshots`
-列出带有AI分析摘要的文件快照。
+## 推荐备份工作流
 
-#### `delete_file_snapshot`
-删除特定文件快照（不可撤销）。
+### 1. 激活工程
 
-### 项目快照管理
-
-#### `create_project_snapshot`
-创建项目级快照，类似Cursor的工作方式。
-
-```typescript
-{
-  "prompt": string,          // 快照描述
-  "name"?: string,          // 用户友好名称
-  "tags"?: string[],        // 快照标签
-  "projectPath"?: string    // 可选项目路径
-}
-```
-
-**特性：**
-- 🔍 智能变更检测（四重检测机制）
-- 📦 增量/全量快照策略
-- 🧠 Serena代码分析集成
-- 🏷️ 标签分类系统
-
-#### `list_project_snapshots`
-列出所有项目快照，包含详细信息：
-
-**输出信息：**
-- 📅 快照时间和时间差
-- 🏷️ 快照名称和标签
-- 🤖 AI分析摘要
-- 📁 实际文件数量
-- 🔗 依赖快照关系
-- 📏 快照大小信息
-
-#### `restore_project_snapshot`
-智能恢复项目快照，支持增量快照链式恢复。
-
-```typescript
-{
-  "snapshotId": string       // 快照ID
-}
-```
-
-**特性：**
-- 🔗 自动构建恢复链
-- 🛡️ 安全验证机制
-- 📊 详细恢复进度
-
-### 传统版本控制
-
-#### `record_edit`
-记录代码编辑（传统方式，建议使用快照）。
-
-#### `rollback_to_version`
-回滚到特定版本（传统方式）。
-
-#### `list_history`
-列出编辑历史记录。
-
-### 会话管理
-
-#### `create_session`
-创建新的编辑会话来组织相关变更。
-
-#### `get_current_session`
-获取当前活动会话的信息。
-
-#### `get_diff`
-生成两个版本之间的差异比较。
-
-## 🧠 智能特性
-
-### AI增强分析
-
-CodeRecoder集成了先进的AI分析能力：
-
-- **代码复杂度评估** - 自动评估代码变更的复杂度
-- **变更意图识别** - 智能识别变更类型（功能、修复、重构等）
-- **影响范围分析** - 分析代码变更的潜在影响
-- **Serena集成** - 深度代码结构和语义分析
-
-### 智能变更检测
-
-四重检测机制确保任何文件变更都能被准确捕获：
-
-1. **Git状态检测** - 基于Git的变更状态
-2. **文件统计对比** - 文件大小、修改时间对比
-3. **内容哈希对比** - SHA256内容哈希验证
-4. **时间戳检测** - 最近修改文件扫描
-
-### 智能快照策略
-
-- **增量快照** - 只保存变更的文件，节省存储空间
-- **全量快照** - 定期创建完整项目副本作为基线
-- **智能触发** - 基于变更量和时间间隔自动决定快照类型
-- **链式恢复** - 增量快照自动关联依赖，确保完整恢复
-
-## 🔧 高级配置
-
-### 项目配置
-
-在项目的`.CodeRecoder/config/project.json`中可以配置：
+`activate_project` 会初始化存储、执行启动恢复检查、创建经过验证的基线，并默认启动自动检查点。
 
 ```json
 {
-  "projectName": "MyProject",
-  "language": "typescript",
-  "features": {
-    "fileSnapshots": true,
-    "projectSnapshots": true,
-    "aiAnalysis": true,
-    "autoBackup": false
-  },
-  "settings": {
-    "maxSnapshots": 100,
-    "autoCleanup": true,
-    "fullSnapshotInterval": 10
-  }
+  "projectPath": "/work/my-project",
+  "projectName": "my-project",
+  "storageRoot": "/data/coderecoder",
+  "autoCheckpoint": true,
+  "debounceMs": 1500,
+  "reconciliationIntervalMs": 60000,
+  "maxBackups": 100,
+  "excludeNames": ["vendor-generated"]
 }
 ```
 
-### 快照策略配置
+当 `storageRoot` 存在时，实际工程存储目录为：
+
+```text
+<storageRoot>/<project-name>-<project-path-hash>/
+```
+
+省略 `storageRoot` 时，默认写入 `<project>/.CodeRecoder/backups/`。如果不希望向源工程写入任何元数据，应始终指定外部目录。
+
+### 2. 检查保护状态
+
+调用 `get_backup_status`，重点检查：
+
+- `hasUncheckpointedChanges` 是否为 `false`；
+- `automaticCheckpoint.state` 是否为 `running`；
+- `watcherReady` 是否为 `true`；
+- `lastError` 是否为空；
+- `latestSnapshot` 和 `currentMatchesSnapshot` 是否符合预期。
+
+自动状态含义：
+
+| 状态 | 含义 |
+| --- | --- |
+| `running` | 监听与检查点调度可用 |
+| `paused` | 恢复或停用流程正在暂停监听 |
+| `degraded` | 监听或检查点发生错误，应检查 `lastError` |
+| `stopped` | 自动检查点未启用或已经停止 |
+
+### 3. 创建命名备份
+
+重要重构、升级或批量生成前，建议额外创建显式备份：
 
 ```json
 {
-  "fullSaveInterval": 10,    // 每10次增量保存执行一次全量保存
-  "maxSnapshots": 100,       // 最大快照数量
-  "autoCleanup": true,       // 自动清理旧快照
-  "excludePatterns": [       // 排除文件模式
-    "node_modules",
-    ".git",
-    "*.log"
-  ]
+  "name": "before-auth-refactor",
+  "prompt": "认证模块重构前的稳定代码",
+  "tags": ["stable", "auth"],
+  "skipIfUnchanged": false
 }
 ```
 
-## 🛡️ 安全特性
+显式备份默认不会因为内容未变化而跳过，因此可以保留有业务意义的命名节点。
 
-### 数据安全
+## 安全恢复
 
-- **内容验证** - 快照恢复前验证文件完整性
-- **备份机制** - 恢复前自动创建当前文件备份
-- **原子操作** - 确保操作的原子性，避免部分失败
-- **路径安全** - 严格的路径验证，防止目录遍历攻击
+恢复必须分成预览和确认两个阶段。
 
-### 恢复安全
+### 第一步：生成预览
 
-- **快照验证** - 恢复前检查快照内容和完整性
-- **依赖检查** - 增量快照恢复前验证依赖链完整性
-- **安全模式** - 移除危险的`--delete`参数，防止意外删除
-- **回滚保护** - 提供多层次的回滚和恢复机制
-
-## 🚀 性能优化
-
-### 高性能特性
-
-- **直接文件复制** - 避免内容分析开销，实现毫秒级快照
-- **增量存储** - 只保存变更文件，大幅减少存储需求
-- **并行处理** - 多文件操作支持并行执行
-- **智能缓存** - 文件哈希和元数据缓存，避免重复计算
-
-### 性能基准
-
-- **文件快照** - < 50ms (单文件)
-- **项目快照** - < 2s (100+ 文件项目)
-- **快照恢复** - < 1s (完整项目恢复)
-- **变更检测** - < 500ms (智能四重检测)
-
-## 🤝 集成指南
-
-### 与AI助手集成
-
-CodeRecoder专为AI辅助编程设计，完美集成：
-
-- **Claude Desktop** - 通过MCP协议原生支持
-- **Cline** - VS Code扩展直接集成
-- **其他MCP客户端** - 任何支持MCP的AI助手
-
-### 工作流示例
-
-```typescript
-// 1. 激活项目
-await activate_project({projectPath: "/my/project"});
-
-// 2. 开发前创建检查点
-await create_project_snapshot({
-  prompt: "开始新功能开发",
-  name: "开发起点",
-  tags: ["checkpoint", "stable"]
-});
-
-// 3. 开发过程中创建文件快照
-await create_file_snapshot({
-  filePath: "/my/project/src/feature.ts",
-  prompt: "实现核心逻辑"
-});
-
-// 4. 功能完成后创建项目快照
-await create_project_snapshot({
-  prompt: "新功能开发完成",
-  name: "Feature X v1.0",
-  tags: ["feature", "complete", "tested"]
-});
-
-// 5. 如需回滚
-await restore_project_snapshot({
-  snapshotId: "checkpoint-snapshot-id"
-});
+```json
+{
+  "snapshotId": "目标快照 UUID",
+  "mode": "exact"
+}
 ```
 
-## 🔄 迁移指南
+`preview_project_restore` 会：
 
-### 从其他工具迁移
+1. 重新验证目标快照；
+2. 扫描当前工程并计算新增、修改、删除和重命名路径；
+3. 将当前树哈希、工程、目标快照和恢复模式绑定到确认令牌；
+4. 返回五分钟有效、只能使用一次的 `confirmationToken`。
 
-#### 从Git迁移
-```bash
-# CodeRecoder可以与Git并存
-# 激活项目后自动检测Git状态
-activate_project {"projectPath": "/existing/git/project"}
+预览会在备份存储中写入短期确认记录，因此 MCP 元数据将其标记为非只读，但它不会修改源代码。
+
+### 第二步：明确确认
+
+```json
+{
+  "snapshotId": "同一个目标快照 UUID",
+  "confirmationToken": "预览返回的令牌"
+}
 ```
 
-#### 从Cursor迁移
-CodeRecoder提供类似Cursor的快照功能：
-- 使用`create_project_snapshot`替代Cursor的项目快照
-- 使用`list_project_snapshots`查看快照历史
-- 使用`restore_project_snapshot`恢复到特定状态
+令牌过期、已使用、工程在预览后变化、工程/快照/模式不匹配时，恢复会被拒绝。不要手工构造令牌，也不要缓存后重复使用。
 
-## 🐛 故障排除
+### 恢复模式
 
-### 常见问题
+| 模式 | 行为 | 适用场景 |
+| --- | --- | --- |
+| `exact` | 将受管代码同步到快照状态，并移除快照中不存在的受管路径 | 完整回到已知代码状态 |
+| `overlay` | 写入快照中的路径，但保留当前工程的额外文件 | 只覆盖已知文件，避免删除新增内容 |
 
-#### 快照创建失败
-```bash
-# 检查项目是否正确激活
-get_project_info {}
+两种模式都不会删除默认排除项。执行恢复前，系统必须先创建带 `protected` 标签的恢复前安全快照；执行后必须验证文件字节、类型和权限。失败时自动回滚，只有回滚也通过验证后才会报告 `rollbackState: restored`。
 
-# 检查磁盘空间
-df -h
+## MCP 工具参考
 
-# 查看详细日志
-tail -f .CodeRecoder/logs/debug.log
+| 工具 | 主要参数 | 副作用与批准建议 |
+| --- | --- | --- |
+| `activate_project` | `projectPath`；可选存储、监听、保留和排除设置 | 创建基线并可能启动监听 |
+| `deactivate_project` | `createFinalCheckpoint`，默认 `true` | 默认创建最终检查点并清理进程内状态 |
+| `get_backup_status` | 无 | 只读，可用于周期健康检查 |
+| `create_project_snapshot` | `name`、`prompt`、`tags`、`skipIfUnchanged` | 新增经过验证的备份并占用磁盘 |
+| `list_project_snapshots` | `limit`，范围 `1–500`，默认 `50` | 只读，按时间倒序返回摘要 |
+| `preview_project_restore` | `snapshotId`、`mode` | 写入短期令牌，不修改源工程 |
+| `restore_project_snapshot` | `snapshotId`、`confirmationToken` | destructive；必须展示预览并取得明确确认 |
+| `verify_project_snapshot` | `snapshotId` | 只读；重新计算内容和清单证据 |
+| `delete_project_snapshot` | `snapshotId`、相同的 `confirmSnapshotId` | destructive；永久删除指定备份 |
+
+恢复和删除工具不应加入客户端的无条件自动批准列表。
+
+## 快照和存储模型
+
+外部存储结构示例：
+
+```text
+/data/coderecoder/
+└── my-project-a1b2c3d4e5f6a7b8/
+    ├── index.json
+    ├── pending/                       # 短期恢复确认记录
+    ├── restore-recovery.json          # 恢复事务日志；异常时会保留
+    └── snapshots/
+        └── <snapshot-uuid>/
+            ├── manifest.json
+            └── tree/                  # 可独立恢复的完整逻辑文件树
 ```
 
-#### 恢复失败
-```bash
-# 验证快照完整性
-list_project_snapshots {}
+每个清单包含：
 
-# 检查快照文件
-ls -la .CodeRecoder/snapshots/projects/[snapshot-id]/
+- 快照 ID、名称、标签、触发来源和创建时间；
+- 父快照 ID、完整工程树哈希和 SHA-256 算法标识；
+- 文件、目录和符号链接条目；
+- 普通文件内容哈希、大小和权限；
+- 新增、修改、删除和推断重命名统计；
+- 逻辑大小、实际新增占用及硬链接去重统计；
+- 可获取时的 Git 分支和短提交证据。
+
+快照在逻辑上彼此独立；删除任意一个普通快照不会破坏其他快照的目录结构。物理去重使用硬链接，因此直接篡改备份树中的某个共享文件可能同时影响多个快照。不要手工编辑存储目录，应使用 `verify_project_snapshot` 检测损坏，并把备份根目录复制到独立介质以获得真正的灾难恢复能力。
+
+## 默认排除规则
+
+默认按任意路径段排除：
+
+```text
+.CodeRecoder  .git  .hg  .svn  node_modules  dist  build  coverage
+.next  .cache  .parcel-cache  .pytest_cache  .mypy_cache  .ruff_cache
+.turbo  .venv  venv  out  target  __pycache__
 ```
 
-#### 变更检测不工作
-```bash
-# 检查文件基线
-# 如果基线为空，会自动重建
-create_project_snapshot {"prompt": "重建基线"}
+此外还排除：
+
+- 名称以 `.env` 开头的文件；
+- `.log`、`.tmp`、`.temp` 和 `.pyc` 文件；
+- 位于受保护工程内部的备份存储目录本身；
+- 用户通过 `excludeNames` 增加的目录段或文件名。
+
+符号链接按链接本身保存，不跟随到工程外。恢复时所有清单路径都会经过安全连接检查，拒绝绝对路径和目录穿越。
+
+## 可靠性设计
+
+- **写入一致性**：清单和索引通过临时文件、文件同步和原子重命名发布。
+- **复制期变更检测**：源文件在扫描与复制期间发生变化时，本次备份失败，不登记为成功。
+- **并发锁**：同一存储和同一源工程分别加锁；锁带进程信息、心跳和失效恢复。
+- **自动对账**：监听事件之外，周期性重新扫描可捕获丢失或合并的文件系统事件。
+- **恢复事务**：源代码发生修改前写入持久化恢复日志，并创建验证过的安全快照。
+- **启动恢复**：初始化会清理未完成快照、过期令牌，修复可恢复的删除事务，并处理被中断的恢复。
+- **保留策略**：超过 `maxBackups` 时清理最旧的普通快照；`protected` 恢复前快照不会被自动清理。
+- **诚实状态**：监听失败会进入 `degraded`，不会继续显示为健康状态。
+
+## Electron 安全边界
+
+- `contextIsolation: true`
+- `nodeIntegration: false`
+- `sandbox: true`
+- renderer 不接触文件系统、环境变量、shell 或通用 `ipcRenderer`
+- preload 与主进程分别验证参数，只暴露备份控制所需的白名单方法
+- IPC 校验主框架和渲染来源；开发地址仅允许 HTTP 回环主机
+- 默认拒绝页面导航、新窗口和所有权限请求
+- Content Security Policy 禁止对象、表单和 frame 内容
+- 最近一次桌面配置以 `0600` 权限原子保存，不持久化活动工程
+
+## 开发和验证
+
+| 命令 | 作用 |
+| --- | --- |
+| `npm run dev` | 使用 `tsx` 直接运行 MCP 源码 |
+| `npm run build` | 严格编译 TypeScript 到 `dist/` |
+| `npm start` | 启动已编译的 stdio MCP 服务 |
+| `npm run lint` | 检查 MCP、Electron 和 Vue TypeScript |
+| `npm run test:quick` | 运行备份内核与自动检查点测试 |
+| `npm run test:mcp` | 运行真实 MCP 初始化、列举和调用生命周期测试 |
+| `npm run test:desktop` | 运行桌面控制器激活、备份和恢复测试 |
+| `npm test` | 运行当前完整自动化测试套件 |
+
+当前测试覆盖二进制内容、空目录、权限、符号链接、排除规则、增删改名、精确恢复、令牌拒绝、损坏检测、保留策略、并发管理器、损坏索引重建、中断删除、中断恢复、监听防抖、stdio 协议纯净性和桌面控制器恢复证据。
+
+测试必须使用操作系统临时目录和外部备份目录，不要对本仓库或真实工程执行恢复测试。详细测试说明见 [`test/README.md`](./test/README.md)。
+
+## 已知边界
+
+- CodeRecoder 不是文件系统冻结点，也不保证跨多个同时写入文件的应用级事务快照。
+- 自动检查点只在对应 MCP 或桌面进程存活且工程已激活时运行。
+- 当前仓库未配置桌面安装包、代码签名、自动更新、托盘常驻或云同步。
+- 默认排除的环境文件和密钥不会进入快照，因此需要独立的安全配置备份方案。
+- 硬链接去重降低本地占用，但不能替代离线副本、对象存储版本控制或异地备份。
+- 每个进程同时只激活一个工程；可以启动独立进程保护多个工程。
+
+## 故障排查
+
+- **客户端看不到工具**：运行 `npm run build`，确认配置使用 `dist/index.js` 的绝对路径，然后重启客户端。
+- **JSON-RPC 解析失败**：检查包装脚本，确保 stdout 没有普通日志；诊断只能写入 stderr。
+- **自动检查点降级**：调用 `get_backup_status`，查看 `automaticCheckpoint.lastError` 和目录权限。
+- **恢复令牌失效**：重新生成预览；工程变化、超时或令牌已使用都会使旧令牌失效。
+- **备份目录不可写**：选择具有写权限的外部 `storageRoot`，并检查磁盘空间。
+- **桌面窗口无法启动**：确认图形会话可用，并先运行 `npm run desktop:typecheck` 与 `npm run desktop:build`。
+
+## 项目结构
+
+```text
+src/
+├── index.ts                    # MCP 注册、进程内激活和恢复协调
+├── backupManager.ts            # 生产备份、验证、存储和恢复内核
+├── autoCheckpointManager.ts    # 文件监听、防抖、队列和周期对账
+└── *SnapshotManager.ts         # 保留用于迁移参考的旧实现
+desktop/
+├── electron/                   # Electron main、preload 和桌面控制器
+├── renderer/                   # Vue 3 界面、组件与样式
+└── shared/contracts.ts         # 桌面 IPC 契约
+test/
+├── backup-system.test.js       # 内核、并发、恢复和监听测试
+├── mcp-server.test.js          # MCP SDK 生命周期测试
+├── stdio-smoke.test.js         # 编译后 stdio 协议测试
+└── desktop-controller.test.ts  # 桌面控制器工作流测试
 ```
 
-### 调试模式
+贡献规则见 [`AGENTS.md`](./AGENTS.md)，快速操作见 [`QUICKSTART.md`](./QUICKSTART.md)，VS Code 配置见 [`VSCODE_USAGE.md`](./VSCODE_USAGE.md)。
 
-启用详细日志：
-```bash
-# 设置环境变量
-export DEBUG=coderecoder:*
-npm start
-```
+## License
 
-## 🤝 贡献指南
-
-我们欢迎社区贡献！请遵循以下步骤：
-
-### 开发环境设置
-
-```bash
-git clone https://github.com/yourusername/CodeRecoder.git
-cd CodeRecoder
-npm install
-npm run build
-```
-
-### 提交指南
-
-1. Fork 项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
-### 代码规范
-
-- 使用 TypeScript 严格模式
-- 遵循 ESLint 配置
-- 添加适当的注释和文档
-- 编写单元测试
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
-
-## 🙏 致谢
-
-- [Model Context Protocol](https://modelcontextprotocol.io/) - 为AI助手提供结构化工具访问
-- [Cursor](https://cursor.sh/) - 启发了项目快照和版本控制设计
-- [TypeScript](https://www.typescriptlang.org/) - 提供类型安全和开发体验
-- [Node.js](https://nodejs.org/) - 运行时环境
-
-## 📊 项目统计
-
-- **代码行数**: ~2,500 行 TypeScript
-- **核心模块**: 8 个
-- **MCP工具**: 18 个
-- **支持的语言**: 全部（语言无关）
-- **最低Node版本**: 18.0.0
-
-## 🔗 相关链接
-
-- [Model Context Protocol 文档](https://modelcontextprotocol.io/docs)
-- [Claude Desktop 集成指南](https://claude.ai/docs/mcp)
-- [TypeScript 官方文档](https://www.typescriptlang.org/docs)
-- [问题反馈](https://github.com/yourusername/CodeRecoder/issues)
-
----
-
-<div align="center">
-
-**CodeRecoder** - 让AI辅助编程更加智能和安全
-
-[⭐ 给个Star](https://github.com/yourusername/CodeRecoder) | [🐛 报告Bug](https://github.com/yourusername/CodeRecoder/issues) | [💡 功能建议](https://github.com/yourusername/CodeRecoder/discussions)
-
-</div>
+[MIT](./LICENSE)

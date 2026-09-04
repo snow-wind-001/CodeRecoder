@@ -1,59 +1,78 @@
 {
   "name": "coderecoder-mcp",
-  "version": "1.1.0",
-  "description": "AI-enhanced intelligent code version management system based on MCP protocol. Provides instant file snapshots, project-level version control, and smart change detection.",
+  "version": "3.0.0",
+  "description": "Production-oriented code backup and verified restore service for MCP and Electron.",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "desktop:dev": "npm run build && electron-vite dev --config desktop/electron.vite.config.ts",
+    "desktop:renderer": "vite --config desktop/vite.config.ts --host 127.0.0.1",
+    "desktop:typecheck": "vue-tsc --noEmit -p desktop/renderer/tsconfig.json && tsc --noEmit -p desktop/tsconfig.electron.json",
+    "desktop:build": "npm run build && npm run desktop:typecheck && electron-vite build --config desktop/electron.vite.config.ts",
+    "desktop:start": "npm run desktop:build && electron dist-desktop/main/index.js",
     "prepare": "npm run build",
-    "test": "bash test/test_full_workflow.sh",
-    "test:quick": "bash test/quick_test.sh",
-    "test:workflow": "bash test/test_full_workflow.sh",
-    "test:js": "node test/test_mcp_tools.js",
+    "test": "npm run build && npm run desktop:typecheck && node --test test/*.test.js && tsx --test test/desktop-controller.test.ts",
+    "test:quick": "npm run build && node --test test/backup-system.test.js",
+    "test:mcp": "npm run build && node --test test/mcp-server.test.js",
+    "test:desktop": "npm run desktop:typecheck && tsx --test test/desktop-controller.test.ts",
+    "test:legacy": "bash test/test_full_workflow.sh",
     "clean": "rm -rf dist/",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && npm run desktop:typecheck"
   },
   "keywords": [
     "mcp",
     "model-context-protocol",
-    "code-generation",
-    "rollback",
-    "version-control",
+    "code-backup",
+    "electron",
+    "vue",
+    "verified-restore",
+    "automatic-checkpoint",
     "ai-assistant",
     "snapshot",
     "backup",
-    "intelligent-coding",
-    "cursor-like",
-    "project-management"
+    "disaster-recovery",
+    "integrity",
+    "project-backup"
   ],
   "author": "spikebai",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.6.0",
+    "@lucide/vue": "^1.41.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "chokidar": "^4.0.3",
+    "diff": "^5.2.2",
     "fs-extra": "^11.2.0",
-    "uuid": "^9.0.1",
-    "diff": "^5.1.0"
+    "uuid": "^11.1.1",
+    "vue": "^3.5.42",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@types/node": "^20.10.0",
-    "@types/fs-extra": "^11.0.4",
-    "@types/uuid": "^9.0.7",
     "@types/diff": "^5.0.8",
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^22.20.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "electron": "^44.2.0",
+    "electron-vite": "^5.0.0",
+    "tsx": "^4.6.0",
     "typescript": "^5.3.0",
-    "tsx": "^4.6.0"
+    "vite": "^7.3.6",
+    "vue-tsc": "^3.3.11"
   },
   "bin": {
     "coderecoder-mcp": "./dist/index.js"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/spikebai/CodeRecoder.git"
+    "url": "https://github.com/snow-wind-001/CodeRecoder.git"
   },
   "bugs": {
-    "url": "https://github.com/spikebai/CodeRecoder/issues"
+    "url": "https://github.com/snow-wind-001/CodeRecoder/issues"
   },
-  "homepage": "https://github.com/spikebai/CodeRecoder#readme"
+  "homepage": "https://github.com/snow-wind-001/CodeRecoder#readme"
 }

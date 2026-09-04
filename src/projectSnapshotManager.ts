@@ -1301,28 +1301,11 @@ export class ProjectSnapshotManager {
    * 调用Serena MCP函数
    */
   private async callSerenaFunction(functionName: string, args: any): Promise<{ success: boolean; data?: any; error?: string }> {
-    try {
-      // 这里应该通过MCP协议调用Serena，现在先用模拟数据
-      // 在实际实现中，这里会使用MCP客户端调用Serena服务器
-      console.error(`📡 调用Serena函数: ${functionName}`);
-      
-      // 模拟Serena响应（在实际环境中会被真实调用替换）
-      if (functionName === 'get_symbols_overview') {
-        return {
-          success: true,
-          data: {
-            classes: Math.floor(Math.random() * 5),
-            functions: Math.floor(Math.random() * 20) + 5,
-            variables: Math.floor(Math.random() * 30) + 10,
-            complexity: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)]
-          }
-        };
-      }
-      
-      return { success: false, error: 'Unknown function' };
-    } catch (error) {
-      return { success: false, error: String(error) };
-    }
+    void args;
+    return {
+      success: false,
+      error: `Serena function ${functionName} is unavailable: no Serena MCP client is configured`
+    };
   }
   
   /**

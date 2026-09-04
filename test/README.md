@@ -1,112 +1,30 @@
 # CodeRecoder Test Suite
 
-This directory contains comprehensive tests for the CodeRecoder MCP tool.
-
-## Test Files
-
-### 1. `quick_test.sh`
-Quick verification test for core functionality (~10 seconds).
+The canonical suite uses Node's built-in test runner and disposable directories under the operating-system temp root.
 
 ```bash
-./test/quick_test.sh
+npm test           # build and run every current test
+npm run test:quick # backup engine and automatic watcher
+npm run test:mcp   # MCP initialize, tool metadata, validation, and calls
+npm run test:desktop # Electron controller activation, restore, and evidence
 ```
 
-Tests:
-- Project activation
-- File snapshot creation
-- Project snapshot creation
-- Snapshot listing
-- Project deactivation
+`backup-system.test.js` covers:
 
-### 2. `test_full_workflow.sh`
-Complete workflow test covering all major features (~30 seconds).
+- files, binary bytes, directories, modes, symlinks, exclusions, and inferred renames;
+- exact restore with preview confirmation and a pre-restore safety backup;
+- rejection after source changes or token expiry;
+- corruption detection;
+- concurrent manager/index writes, corrupt-index rebuilding, and interrupted deletion recovery;
+- startup rollback from an interrupted-restore journal;
+- automatic-checkpoint debounce, pause, event discard, and internal-storage recursion prevention.
 
-```bash
-./test/test_full_workflow.sh
-```
+`mcp-server.test.js` connects a real SDK client and server with an in-memory transport. It verifies the initialize lifecycle, server instructions, the production tool list, output schemas, destructive annotations, structured errors, input validation, activation, listing, and deactivation.
 
-Tests:
-- ✅ Project activation
-- ✅ Full snapshot creation (#1)
-- ✅ File modification detection
-- ✅ Incremental snapshot creation (#2, #3)
-- ✅ Snapshot listing with metadata
-- ✅ File-level snapshots
-- ✅ Snapshot restoration
-- ✅ Session management
-- ✅ Project deactivation
+`stdio-smoke.test.js` starts the compiled executable as a child process, performs the JSON-RPC initialize lifecycle, verifies the tool list, checks that stdout contains only protocol messages, and confirms clean shutdown on stdin EOF.
 
-### 3. `test_mcp_tools.js`
-Comprehensive Node.js test suite for all MCP tools.
+`desktop-controller.test.ts` exercises the Electron-facing controller without a browser. It verifies activation, persisted preferences, snapshot creation, preview-token restore, recovery evidence, integrity checks, and deactivation.
 
-```bash
-node test/test_mcp_tools.js
-```
+The older shell and JSON-RPC scripts remain only as migration fixtures for the removed pre-v3 tool surface. They are not part of `npm test`; `npm run test:legacy` may fail by design until a downstream user migrates those calls.
 
-Tests all 17 MCP tools:
-- Project Management (activate, deactivate, list, info)
-- Session Management (create, get current)
-- File Snapshots (create, list, restore, delete)
-- Project Snapshots (create, list, restore)
-- Legacy Tools (record_edit, list_history, rollback, diff)
-
-## Running All Tests
-
-```bash
-# Quick test
-npm run test:quick
-
-# Full workflow test
-npm run test:workflow
-
-# All tests
-npm test
-```
-
-## Test Requirements
-
-1. Node.js 18+
-2. Built project (`npm run build`)
-3. Write access to `/tmp` directory
-4. rsync installed (for project snapshots)
-
-## Test Output
-
-Test results are saved to:
-- `test/test_results.log` - Shell test logs
-- `test/test_results.json` - Node.js test results
-
-## Expected Results
-
-All tests should pass with 100% success rate:
-
-```
-============================================
-Results: 10 successful, 0 failed
-============================================
-✅ Overall: EXCELLENT (100% pass rate)
-```
-
-## Troubleshooting
-
-If tests fail:
-
-1. **Build project first**:
-   ```bash
-   npm run build
-   ```
-
-2. **Check Node.js version**:
-   ```bash
-   node --version  # Should be 18+
-   ```
-
-3. **Verify rsync**:
-   ```bash
-   which rsync
-   ```
-
-4. **Check permissions**:
-   ```bash
-   ls -la /tmp
-   ```
+When adding tests, never restore into this repository or another real project. Create both the source fixture and external backup root under a fresh temp directory, register cleanup with `t.after`, and assert persisted files in addition to API responses.
