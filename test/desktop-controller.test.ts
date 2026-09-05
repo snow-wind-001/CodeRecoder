@@ -265,6 +265,16 @@ test('MCP advisor uses an independent Node executable and valid client schemas',
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
   const advisor = new McpIntegrationService(repositoryRoot);
   const report = await advisor.inspect(null);
+  assert.deepEqual(report.items.map(item => item.id), [
+    'node',
+    'server-build',
+    'serena',
+    'serena-project',
+    'vscode',
+    'cursor',
+    'claude-code',
+    'codex'
+  ]);
   const node = report.items.find(item => item.id === 'node');
   assert.equal(node?.status, 'available');
   assert.match(node?.path ?? '', /node$/);
@@ -277,6 +287,46 @@ test('MCP advisor uses an independent Node executable and valid client schemas',
   const cursor = await advisor.recommendation('cursor', 'coderecorder', null);
   const cursorConfig = JSON.parse(cursor.content) as { mcpServers: { coderecorder: unknown } };
   assert.ok(cursorConfig.mcpServers.coderecorder);
+
+  const project = advisor.projectContext(
+    'af420000-0000-4000-8000-00000000c91a',
+    repositoryRoot,
+    {
+      state: 'ready',
+      enabled: true,
+      autoConfigure: true,
+      cliPath: '/opt/serena/bin/serena',
+      configPath: path.join(repositoryRoot, '.serena', 'project.yml'),
+      endpoint: 'http://127.0.0.1:19123/mcp',
+      pid: 1234,
+      startedAt: Date.now(),
+      lastCheckedAt: Date.now(),
+      lastError: null,
+      lastLog: null,
+      repairedConfigBackup: null
+    }
+  );
+  for (const target of ['vscode', 'cursor', 'claude-code', 'codex'] as const) {
+    const codeRecoder = await advisor.recommendation(target, 'coderecorder', project);
+    const serena = await advisor.recommendation(target, 'serena', project);
+    assert.equal(codeRecoder.endpointIsTemporary, false);
+    assert.equal(serena.endpointIsTemporary, true);
+    assert.equal(serena.endpoint, project.serena.endpoint);
+    assert.match(serena.content, /\/opt\/serena\/bin\/serena/);
+    assert.match(serena.content, /start-mcp-server/);
+    assert.doesNotMatch(serena.content, new RegExp(`${repositoryRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/dist/index\\.js`));
+    if (target === 'vscode' || target === 'cursor') {
+      const parsed = JSON.parse(serena.content) as Record<string, Record<string, { command: string; args: string[]; type?: string }>>;
+      const rootKey = target === 'vscode' ? 'servers' : 'mcpServers';
+      assert.equal(parsed[rootKey]?.serena?.command, '/opt/serena/bin/serena');
+      assert.ok(parsed[rootKey]?.serena?.args.includes('--project'));
+      if (target === 'vscode') assert.equal(parsed[rootKey]?.serena?.type, 'stdio');
+    } else {
+      assert.match(serena.content, new RegExp(`^${target === 'codex' ? 'codex' : 'claude'} mcp add `));
+      if (target === 'claude-code') assert.match(serena.content, /--scope user/);
+      if (target === 'codex') assert.match(serena.content, /--context codex/);
+    }
+  }
 });
 
 test('project windows are bound to one session while the main window may coordinate all', () => {

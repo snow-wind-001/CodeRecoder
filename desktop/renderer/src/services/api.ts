@@ -76,15 +76,25 @@ function createDemoApi(): CodeRecoderDesktopApi {
     [secondProjectId, [demoSnapshot('71d40000-0000-4000-8000-00000000ab35', now - 18 * 60_000, 'automatic', 'Automatic checkpoint')]]
   ]);
   const running = new Set<string>([firstProjectId, secondProjectId]);
+  const serenaReady = new Set<string>([firstProjectId]);
   let selectedId: string | null = firstProjectId;
-  let recovery: ProjectDashboard['recovery'] = { state: 'ready', title: '恢复保护就绪', detail: '最近未执行恢复，也没有待处理的回滚' };
+  const readyRecovery = (): ProjectDashboard['recovery'] => ({
+    state: 'ready',
+    title: '恢复保护就绪',
+    detail: '最近未执行恢复，也没有待处理的回滚'
+  });
+  const recoveries = new Map<string, ProjectDashboard['recovery']>([
+    [firstProjectId, readyRecovery()],
+    [secondProjectId, readyRecovery()]
+  ]);
   let lastRestoreMode: RestoreMode = 'exact';
 
   const summary = (id: string): ProjectSummary => {
     const config = configs.get(id) as ProjectRegistrationInput;
     const projectSnapshots = snapshots.get(id) ?? [];
     const isRunning = running.has(id);
-    const serenaReady = id === firstProjectId && isRunning;
+    const serenaEnabled = config.serenaEnabled;
+    const isSerenaReady = serenaEnabled && serenaReady.has(id) && isRunning;
     return {
       id,
       name: config.projectPath.split('/').at(-1) ?? 'project',
@@ -111,16 +121,16 @@ function createDemoApi(): CodeRecoderDesktopApi {
         lastError: null
       },
       serena: {
-        state: !isRunning ? 'stopped' : serenaReady ? 'ready' : 'degraded',
-        enabled: true,
-        autoConfigure: true,
+        state: !serenaEnabled ? 'disabled' : !isRunning ? 'stopped' : isSerenaReady ? 'ready' : 'degraded',
+        enabled: serenaEnabled,
+        autoConfigure: config.serenaAutoConfigure,
         cliPath: '/home/user/.local/bin/serena',
         configPath: `${config.projectPath}/.serena/project.yml`,
-        endpoint: serenaReady ? 'http://127.0.0.1:19123/mcp' : null,
-        pid: serenaReady ? 42117 : null,
-        startedAt: serenaReady ? now - 6 * 60 * 60_000 : null,
+        endpoint: isSerenaReady ? 'http://127.0.0.1:19123/mcp' : null,
+        pid: isSerenaReady ? 42117 : null,
+        startedAt: isSerenaReady ? now - 6 * 60 * 60_000 : null,
         lastCheckedAt: now - 12_000,
-        lastError: id === secondProjectId ? 'Error loading configuration；原配置已保留，可重新检测' : null,
+        lastError: id === secondProjectId && !isSerenaReady ? 'Error loading configuration；原配置已保留，可重新检测' : null,
         lastLog: null,
         repairedConfigBackup: null
       },
@@ -148,7 +158,7 @@ function createDemoApi(): CodeRecoderDesktopApi {
         lastRecovery: null
       } : null,
       snapshots: projectSnapshots,
-      recovery
+      recovery: recoveries.get(id) ?? readyRecovery()
     };
   };
 
@@ -175,6 +185,8 @@ function createDemoApi(): CodeRecoderDesktopApi {
       configs.set(id, { ...input });
       snapshots.set(id, [demoSnapshot(crypto.randomUUID(), Date.now(), 'activation', 'Activation baseline')]);
       running.add(id);
+      if (input.serenaEnabled) serenaReady.add(id);
+      recoveries.set(id, readyRecovery());
       selectedId = id;
       return ok('工程保护已启动', { projectId: id });
     },
@@ -182,10 +194,19 @@ function createDemoApi(): CodeRecoderDesktopApi {
       selectedId = id;
       return ok('工程已选择', structuredClone(dashboard()));
     },
-    startProject: async id => { running.add(id); return ok('工程保护已启动'); },
-    stopProject: async ({ projectId }) => { running.delete(projectId); return ok('工程监控已安全停止'); },
+    startProject: async id => {
+      running.add(id);
+      if (configs.get(id)?.serenaEnabled) serenaReady.add(id);
+      return ok('工程保护已启动');
+    },
+    stopProject: async ({ projectId }) => {
+      running.delete(projectId);
+      serenaReady.delete(projectId);
+      return ok('工程监控已安全停止');
+    },
     removeProject: async ({ projectId }) => {
       configs.delete(projectId); snapshots.delete(projectId); running.delete(projectId);
+      serenaReady.delete(projectId); recoveries.delete(projectId);
       selectedId = configs.keys().next().value ?? null;
       return ok('工程已移除');
     },
@@ -202,9 +223,9 @@ function createDemoApi(): CodeRecoderDesktopApi {
       treeHash: snapshots.get(input.projectId)?.find(item => item.id === input.snapshotId)?.treeHash,
       verifiedEntries: 126
     }),
-    previewRestore: async ({ snapshotId, mode }) => {
+    previewRestore: async ({ projectId, snapshotId, mode }) => {
       lastRestoreMode = mode;
-      recovery = { state: 'preview-ready', title: '恢复预览等待确认', detail: '尚未修改工程文件；确认令牌将在五分钟后失效', occurredAt: Date.now(), snapshotId };
+      recoveries.set(projectId, { state: 'preview-ready', title: '恢复预览等待确认', detail: '尚未修改工程文件；确认令牌将在五分钟后失效', occurredAt: Date.now(), snapshotId });
       return ok('恢复预览已生成', {
         state: 'restore_preview' as const,
         snapshotId,
@@ -217,11 +238,15 @@ function createDemoApi(): CodeRecoderDesktopApi {
         requiresConfirmation: true as const
       });
     },
-    restoreSnapshot: async ({ snapshotId }) => {
-      recovery = { state: 'restored', title: '恢复完成并通过校验', detail: '目标快照已应用，恢复前安全备份已保留', occurredAt: Date.now(), snapshotId, preRestoreSnapshotId: crypto.randomUUID() };
-      return ok('代码恢复完成并通过校验', { state: 'restored_verified' as const, snapshotId, mode: lastRestoreMode, preRestoreSnapshotId: recovery.preRestoreSnapshotId, verification: 'verified' as const });
+    restoreSnapshot: async ({ projectId, snapshotId }) => {
+      const preRestoreSnapshotId = crypto.randomUUID();
+      recoveries.set(projectId, { state: 'restored', title: '恢复完成并通过校验', detail: '目标快照已应用，恢复前安全备份已保留', occurredAt: Date.now(), snapshotId, preRestoreSnapshotId });
+      return ok('代码恢复完成并通过校验', { state: 'restored_verified' as const, snapshotId, mode: lastRestoreMode, preRestoreSnapshotId, verification: 'verified' as const });
     },
-    restartSerena: async id => ok('Serena 已通过 MCP initialize 握手', summary(id).serena),
+    restartSerena: async id => {
+      if (running.has(id) && configs.get(id)?.serenaEnabled) serenaReady.add(id);
+      return ok('Serena 已通过 MCP initialize 握手', summary(id).serena);
+    },
     inspectMcpEnvironment: async projectId => ok('MCP 环境检查完成', {
       checkedAt: Date.now(), projectId: projectId ?? null, ready: true,
       items: [
@@ -244,16 +269,41 @@ function createDemoApi(): CodeRecoderDesktopApi {
 }
 
 function demoRecommendation(target: McpRecommendation['target'], service: McpRecommendation['service'], projectId?: string): McpRecommendation {
-  const json = service === 'coderecorder'
-    ? `{\n  "${target === 'vscode' ? 'servers' : 'mcpServers'}": {\n    "coderecorder": {\n      "command": "/usr/bin/node",\n      "args": ["/workspace/dist/index.js"]\n    }\n  }\n}`
-    : `{\n  "${target === 'vscode' ? 'servers' : 'mcpServers'}": {\n    "serena": {\n      "command": "/home/user/.local/bin/serena",\n      "args": ["start-mcp-server", "--context", "ide", "--project", "/workspace"]\n    }\n  }\n}`;
+  const command = service === 'coderecorder' ? '/usr/bin/node' : '/home/user/.local/bin/serena';
+  const args = service === 'coderecorder'
+    ? ['/workspace/dist/index.js']
+    : [
+        'start-mcp-server',
+        '--context',
+        target === 'codex' ? 'codex' : 'ide',
+        '--project',
+        '/workspace',
+        '--enable-web-dashboard',
+        'false',
+        '--open-web-dashboard',
+        'false',
+        '--enable-gui-log-window',
+        'false'
+      ];
+  const isJson = target === 'vscode' || target === 'cursor';
+  const json = target === 'vscode'
+    ? { servers: { [service]: { type: 'stdio', command, args } } }
+    : { mcpServers: { [service]: { command, args } } };
+  const clientCommand = target === 'codex' ? 'codex' : 'claude';
+  const cliTokens = [clientCommand, 'mcp', 'add', ...(target === 'claude-code' ? ['--scope', 'user'] : []), service, '--', command, ...args];
   return {
     target,
     service,
     title: `${target} · ${service}`,
-    format: target === 'claude-code' || target === 'codex' ? 'shell' : 'json',
-    configPath: target === 'vscode' ? '.vscode/mcp.json' : target === 'cursor' ? '~/.cursor/mcp.json' : '通过 CLI 写入用户配置',
-    content: target === 'claude-code' || target === 'codex' ? `${target === 'codex' ? 'codex' : 'claude'} mcp add ${service} -- /usr/bin/node /workspace/dist/index.js` : json,
+    format: isJson ? 'json' : 'shell',
+    configPath: target === 'vscode'
+      ? '.vscode/mcp.json'
+      : target === 'cursor'
+        ? '~/.cursor/mcp.json'
+        : target === 'claude-code'
+          ? '~/.claude.json（通过 CLI）'
+          : '~/.codex/config.toml（通过 CLI）',
+    content: isJson ? `${JSON.stringify(json, null, 2)}\n` : cliTokens.join(' '),
     notes: ['不会自动覆盖现有客户端配置。', '恢复与删除工具不要设置为无条件自动批准。'],
     endpoint: service === 'serena' && projectId ? 'http://127.0.0.1:19123/mcp' : null,
     endpointIsTemporary: service === 'serena' && Boolean(projectId)
