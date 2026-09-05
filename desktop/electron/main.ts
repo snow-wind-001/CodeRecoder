@@ -17,6 +17,7 @@ import {
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const rendererEntry = path.resolve(currentDirectory, '../renderer/index.html');
 const preloadEntry = path.resolve(currentDirectory, '../preload/index.cjs');
+const desktopIcon = path.resolve(currentDirectory, '../../desktop/assets/coderecoder.png');
 const packagedRendererUrl = pathToFileURL(rendererEntry).href;
 const developmentUrl = resolveDevelopmentUrl(process.env.ELECTRON_RENDERER_URL);
 
@@ -53,6 +54,7 @@ function isTrustedRendererUrl(value: string): boolean {
 
 app.setName('CodeRecoder');
 app.setAppUserModelId('com.coderecoder.desktop');
+if (process.platform === 'linux') app.setDesktopName('coderecoder.desktop');
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
@@ -71,6 +73,7 @@ function createWindow(): BrowserWindow {
     minHeight: 640,
     maxWidth: 560,
     backgroundColor: '#f3f5f7',
+    ...(process.platform === 'linux' ? { icon: desktopIcon } : {}),
     autoHideMenuBar: true,
     show: false,
     useContentSize: true,

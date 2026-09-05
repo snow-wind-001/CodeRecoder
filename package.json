@@ -13,6 +13,7 @@
     "desktop:typecheck": "vue-tsc --noEmit -p desktop/renderer/tsconfig.json && tsc --noEmit -p desktop/tsconfig.electron.json",
     "desktop:build": "npm run build && npm run desktop:typecheck && electron-vite build --config desktop/electron.vite.config.ts",
     "desktop:start": "npm run desktop:build && electron dist-desktop/main/index.js",
+    "desktop:install-linux": "bash desktop/install-linux-launcher.sh --pin",
     "prepare": "npm run build",
     "test": "npm run build && npm run desktop:typecheck && node --test test/*.test.js && tsx --test test/desktop-controller.test.ts",
     "test:quick": "npm run build && node --test test/backup-system.test.js",

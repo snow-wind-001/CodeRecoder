@@ -66,6 +66,10 @@ npm test
 npm run desktop:start
 ```
 
+| 备份总览 | 恢复预览与安全确认 |
+| --- | --- |
+| ![CodeRecoder 桌面控制台显示工程保护状态与快照时间线](./docs/images/desktop-dashboard.png) | ![CodeRecoder 恢复抽屉显示恢复模式、变更统计和确认令牌](./docs/images/desktop-restore.png) |
+
 首次启动后：
 
 1. 选择需要保护的工程目录。
@@ -83,6 +87,14 @@ npm run desktop:start
 
 桌面端不提供永久删除按钮；删除备份仍需通过 MCP 工具进行双 ID 确认。更多说明见 [`desktop/README.md`](./desktop/README.md)。
 
+### 安装到 Ubuntu/GNOME 程序栏
+
+```bash
+npm run desktop:install-linux
+```
+
+该命令以当前用户身份安装 `coderecoder.desktop`，刷新应用列表并固定到 GNOME Dock，不需要 `sudo`。启动项会自动寻找满足要求的 NVM Node.js，并从当前仓库构建、启动桌面端；因此移动或删除仓库后需要重新运行安装命令。再次点击图标会唤醒已有窗口。
+
 ### 桌面开发命令
 
 ```bash
@@ -92,6 +104,14 @@ npm run desktop:typecheck # 检查 renderer、preload 和 Electron 主进程
 npm run desktop:build     # 生产构建到 dist-desktop/
 npm run test:desktop      # 桌面控制器集成测试
 ```
+
+### 多工程与多开策略
+
+当前 `3.0.0` 桌面端采用**单 Electron 实例、单活动工程**模型：`DesktopBackupController` 只保存一个活动会话，第二次启动会聚焦现有窗口；点击“切换工程”时会先尝试创建最终检查点，再停止旧工程监听。因此，当前桌面窗口不能同时监控多个任务工程，也不需要、且默认不允许多开多个 Electron 进程。
+
+MCP 入口可以由不同客户端启动多个独立服务进程，每个进程各激活一个工程。它们共享同一备份内核；若指向同一工程或存储位置，跨进程锁会串行化关键操作。需要立即并行保护多个工程时，推荐为每个任务工程配置独立 MCP 进程和独立外部备份根目录。
+
+桌面端后续更合理的演进方式不是复制多个应用进程，而是在单进程内增加工程会话注册表：每个工程拥有独立的 `BackupManager`、`AutoCheckpointManager` 和健康状态，主窗口提供工程切换器及汇总告警；确有并排观察需求时，再由同一 Electron 进程创建多个 `BrowserWindow`。这样能避免重复监听、额外内存占用和退出检查点状态冲突。
 
 ## 快速开始：连接 MCP 客户端
 
@@ -328,6 +348,7 @@ claude mcp list
 | `npm run test:quick` | 运行备份内核与自动检查点测试 |
 | `npm run test:mcp` | 运行真实 MCP 初始化、列举和调用生命周期测试 |
 | `npm run test:desktop` | 运行桌面控制器激活、备份和恢复测试 |
+| `npm run desktop:install-linux` | 安装用户级启动项并固定到 GNOME Dock |
 | `npm test` | 运行当前完整自动化测试套件 |
 
 当前测试覆盖二进制内容、空目录、权限、符号链接、排除规则、增删改名、精确恢复、令牌拒绝、损坏检测、保留策略、并发管理器、损坏索引重建、中断删除、中断恢复、监听防抖、stdio 协议纯净性和桌面控制器恢复证据。
@@ -338,10 +359,10 @@ claude mcp list
 
 - CodeRecoder 不是文件系统冻结点，也不保证跨多个同时写入文件的应用级事务快照。
 - 自动检查点只在对应 MCP 或桌面进程存活且工程已激活时运行。
-- 当前仓库未配置桌面安装包、代码签名、自动更新、托盘常驻或云同步。
+- 当前仓库提供用户级 Linux 启动项，但尚未配置可分发安装包、代码签名、自动更新、托盘常驻或云同步。
 - 默认排除的环境文件和密钥不会进入快照，因此需要独立的安全配置备份方案。
 - 硬链接去重降低本地占用，但不能替代离线副本、对象存储版本控制或异地备份。
-- 每个进程同时只激活一个工程；可以启动独立进程保护多个工程。
+- 每个进程同时只激活一个工程；桌面端保持单实例，MCP 可通过独立进程并行保护多个工程。
 
 ## 故障排查
 
@@ -361,9 +382,13 @@ src/
 ├── autoCheckpointManager.ts    # 文件监听、防抖、队列和周期对账
 └── *SnapshotManager.ts         # 保留用于迁移参考的旧实现
 desktop/
+├── assets/                     # 桌面图标资源
 ├── electron/                   # Electron main、preload 和桌面控制器
 ├── renderer/                   # Vue 3 界面、组件与样式
+├── install-linux-launcher.sh   # 用户级应用菜单与 GNOME Dock 安装器
+├── start-coderecoder-desktop.sh # 图形会话启动包装器
 └── shared/contracts.ts         # 桌面 IPC 契约
+docs/images/                    # README 桌面界面截图
 test/
 ├── backup-system.test.js       # 内核、并发、恢复和监听测试
 ├── mcp-server.test.js          # MCP SDK 生命周期测试

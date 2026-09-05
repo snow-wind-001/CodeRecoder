@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">CodeRecoder</title>
+  <desc id="description">Three protected code layers on a dark rounded square.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#191d2a"/>
+  <path d="M256 100 408 180 256 260 104 180Z" fill="#6965f1"/>
+  <path d="m104 249 152 80 152-80" fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" stroke-width="38"/>
+  <path d="m104 321 152 80 152-80" fill="none" stroke="#a9a7ff" stroke-linecap="round" stroke-linejoin="round" stroke-width="38"/>
+  <path d="m184 180 48 48 96-96" fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" stroke-width="30"/>
+</svg>
