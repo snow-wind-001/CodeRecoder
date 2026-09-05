@@ -18,27 +18,34 @@ CodeRecoder 是一个本地优先的代码备份与可验证恢复系统，同�
 | 自动回滚 | 恢复失败时回到操作前状态；进程中断后可在下次初始化时恢复 |
 | 并发协调 | 存储锁与工程锁带心跳、超时和失效锁恢复 |
 | 双控制入口 | stdio MCP 服务与 Vue 3/Electron 桌面控制台复用同一备份内核 |
+| 多工程桌面管理 | 单 Electron 主进程维护隔离会话，可为工程创建独立观察窗口 |
+| Serena 自动接入 | 自动发现 CLI、创建/修复工程配置、启动 sidecar 并执行 MCP 握手 |
+| MCP 配置工作台 | 为 VS Code、Cursor、Claude Code、Codex 生成本机配置并检查依赖 |
 
 ## 架构
 
 ```mermaid
 flowchart TB
-  A[Codex / Claude Code / MCP 客户端] -->|stdio JSON-RPC| B[CodeRecoderServer]
-  C[Vue 3 Renderer] -->|类型化白名单 IPC| D[Electron Preload / Main]
-  D --> E[DesktopBackupController]
+  A[VS Code / Cursor / Claude Code / Codex] -->|stdio JSON-RPC| B[CodeRecoder MCP]
+  C[Vue 3 Renderer] -->|类型化白名单 IPC| D[Electron Main]
+  D --> R[ProjectSessionRegistry]
+  R --> S1[ProjectSession A]
+  R --> S2[ProjectSession B…]
+  S1 --> F1[BackupManager + AutoCheckpointManager]
+  S1 --> SE1[Serena sidecar A]
+  S2 --> F2[独立备份管理器与操作队列]
+  S2 --> SE2[Serena sidecar B]
   B --> F[BackupManager]
-  E --> F
-  B --> G[AutoCheckpointManager]
-  E --> G
-  G --> F
-  F --> H[SHA-256 清单与完整快照]
-  F --> I[跨进程工程锁与存储锁]
-  H --> J[工程内存储或外部备份介质]
+  F1 --> H[SHA-256 清单与完整快照]
+  F2 --> H
+  F --> H
+  H --> I[工程锁 / 存储锁 / 外部备份介质]
 ```
 
 - `BackupManager` 是唯一生产备份内核，负责扫描、快照、清单、验证、保留策略、恢复和启动恢复。
 - `AutoCheckpointManager` 只负责监听和调度，最终仍通过 `BackupManager` 创建经过验证的完整快照。
-- MCP 与桌面端分别维护进程内激活状态，不会持久化或争用一个全局“当前工程”。
+- 桌面端持久化 schema v2 工程注册表；每个工程拥有独立管理器、监听器、恢复记录、操作队列与 Serena 进程。
+- 主窗口管理全部会话；同一工程最多一个独立窗口。关闭工程窗口不停止保护，重复打开只会聚焦已有窗口。
 - 两个入口同时保护同一工程时，工程级跨进程锁会串行化写入和恢复操作。
 
 ## 系统要求
@@ -66,20 +73,22 @@ npm test
 npm run desktop:start
 ```
 
-| 备份总览 | 恢复预览与安全确认 |
-| --- | --- |
-| ![CodeRecoder 桌面控制台显示工程保护状态与快照时间线](./docs/images/desktop-dashboard.png) | ![CodeRecoder 恢复抽屉显示恢复模式、变更统计和确认令牌](./docs/images/desktop-restore.png) |
+| 多工程备份总览 | MCP 与 Serena 配置工作台 | 恢复预览与安全确认 |
+| --- | --- | --- |
+| ![CodeRecoder 桌面控制台显示多工程会话、保护状态与快照时间线](./docs/images/desktop-dashboard.png) | ![CodeRecoder MCP 设置显示环境预检、客户端配置和临时 Serena endpoint](./docs/images/desktop-mcp-settings.png) | ![CodeRecoder 恢复抽屉显示恢复模式、变更统计和确认令牌](./docs/images/desktop-restore.png) |
 
 首次启动后：
 
 1. 选择需要保护的工程目录。
 2. 选择外部备份根目录；推荐使用独立磁盘或专用备份目录。
-3. 决定是否启用自动检查点，并设置普通快照保留数量。
-4. 点击“启动保护”，等待基线备份创建并通过校验。
+3. 决定是否启用自动检查点、随应用启动及 Serena 自动配置。
+4. 点击“注册并启动保护”，等待基线备份验证和 Serena MCP 握手。
+5. 用顶部工程条切换会话；需要并排观察时，为选中工程打开独立窗口。
 
 桌面窗口默认内容尺寸为 `424×880`，宽度限制为 `380–560px`，适合放在编辑器旁边。界面提供：
 
 - 自动检查点健康度和未备份变更提示；
+- 多工程运行汇总，以及备份与 Serena 相互独立的健康状态；
 - 快照时间线、变更数量、逻辑大小、新增占用和树哈希摘要；
 - 手动创建备份和重新验证完整性；
 - `exact`/`overlay` 恢复预览、受影响路径和令牌倒计时；
@@ -107,11 +116,22 @@ npm run test:desktop      # 桌面控制器集成测试
 
 ### 多工程与多开策略
 
-当前 `3.0.0` 桌面端采用**单 Electron 实例、单活动工程**模型：`DesktopBackupController` 只保存一个活动会话，第二次启动会聚焦现有窗口；点击“切换工程”时会先尝试创建最终检查点，再停止旧工程监听。因此，当前桌面窗口不能同时监控多个任务工程，也不需要、且默认不允许多开多个 Electron 进程。
+桌面端采用**单 Electron 实例 + 多工程会话注册表 + 每工程独立备份管理器**。第二次启动只聚焦主窗口，不会复制文件监听器或 Serena；工程窗口关闭后，后台会话继续运行。应用退出时，各会话按全局 I/O 并发上限创建最终检查点并停止 sidecar。
 
-MCP 入口可以由不同客户端启动多个独立服务进程，每个进程各激活一个工程。它们共享同一备份内核；若指向同一工程或存储位置，跨进程锁会串行化关键操作。需要立即并行保护多个工程时，推荐为每个任务工程配置独立 MCP 进程和独立外部备份根目录。
+注册器拒绝重复工程、父子嵌套工程，以及与任一受保护工程重叠的备份根目录。同一外部备份根目录可以服务多个非嵌套工程，实际数据会写入带工程路径哈希的独立子目录。旧版单工程偏好会迁移到 schema v2，但不会在迁移后未经确认自动启动。
 
-桌面端后续更合理的演进方式不是复制多个应用进程，而是在单进程内增加工程会话注册表：每个工程拥有独立的 `BackupManager`、`AutoCheckpointManager` 和健康状态，主窗口提供工程切换器及汇总告警；确有并排观察需求时，再由同一 Electron 进程创建多个 `BrowserWindow`。这样能避免重复监听、额外内存占用和退出检查点状态冲突。
+MCP stdio 入口仍是“一服务进程、一活动工程”；多个编辑器客户端可以启动独立进程。若桌面与 MCP 同时操作同一工程，跨进程工程锁会继续保证关键写入串行化。
+
+### 内置 MCP 配置工作台
+
+点击标题栏的设置按钮，可以：
+
+- 检查独立 Node.js、`dist/index.js`、Serena CLI、`.serena/project.yml` 以及四类客户端程序；
+- 在 VS Code、Cursor、Claude Code、Codex 间切换，并生成 CodeRecoder 或 Serena 配置；
+- 由主进程重新生成并复制建议，renderer 不获得通用剪贴板、文件系统或命令执行权限；
+- 查看当前 Serena HTTP endpoint。该地址只在当前 Electron 工程会话有效，长期配置应使用界面建议的 stdio 命令。
+
+工作台不会覆盖已有客户端配置。合并 JSON/TOML 前应保留原文件，并避免把恢复、删除工具加入无条件自动批准列表。
 
 ## 快速开始：连接 MCP 客户端
 
@@ -120,6 +140,12 @@ MCP 入口可以由不同客户端启动多个独立服务进程，每个进程�
 ```bash
 npm run build
 ```
+
+也可以启动桌面端，打开“**MCP 连接设置**”，选择客户端和服务后复制已经展开为本机绝对路径的配置。该方式会同时指出缺失组件，但仍由用户决定如何合并现有配置。
+
+### VS Code / Cursor
+
+VS Code 使用工作区级 `.vscode/mcp.json` 的 `servers` 字段；Cursor 使用用户级 `~/.cursor/mcp.json` 的 `mcpServers` 字段。两者字段结构不同，不要直接复制整个文件互相覆盖。
 
 ### Codex CLI / IDE
 
@@ -145,6 +171,12 @@ claude mcp list
 ```
 
 其他 MCP 客户端使用等价的 stdio 配置即可。stdout 专用于 MCP JSON-RPC，所有诊断信息写入 stderr。不要在包装脚本中把普通日志输出到 stdout。
+
+### Serena
+
+桌面工程会话启用 Serena 后会依次执行：发现可执行文件、检查工程配置、必要时运行 `serena project create`、以固定参数绑定 `127.0.0.1` 动态端口，并发送真实 MCP `initialize` 请求。只有握手成功才显示“已连接”。
+
+若日志包含 `Error loading configuration` 且已开启自动配置，桌面端会先把现有 `project.yml` 重命名为带时间戳的 `.bak`，再创建新配置；重建失败时会尝试恢复原文件。Serena 失败只降低辅助工具状态，不会把正常的备份保护误报为失败。
 
 更多配置示例和批准策略见 [`MCP_CONFIG_GUIDE.md`](./MCP_CONFIG_GUIDE.md)。
 
@@ -335,7 +367,9 @@ claude mcp list
 - IPC 校验主框架和渲染来源；开发地址仅允许 HTTP 回环主机
 - 默认拒绝页面导航、新窗口和所有权限请求
 - Content Security Policy 禁止对象、表单和 frame 内容
-- 最近一次桌面配置以 `0600` 权限原子保存，不持久化活动工程
+- 工程注册表以 schema v2、`0600` 权限原子保存；不保存恢复令牌或客户端密钥
+- 工程窗口在主进程绑定 `projectId`，不能跨会话调用备份、恢复或 Serena 操作
+- Serena 仅使用固定参数直接 `spawn`，不经过 shell，并只绑定 `127.0.0.1`
 
 ## 开发和验证
 
@@ -347,11 +381,11 @@ claude mcp list
 | `npm run lint` | 检查 MCP、Electron 和 Vue TypeScript |
 | `npm run test:quick` | 运行备份内核与自动检查点测试 |
 | `npm run test:mcp` | 运行真实 MCP 初始化、列举和调用生命周期测试 |
-| `npm run test:desktop` | 运行桌面控制器激活、备份和恢复测试 |
+| `npm run test:desktop` | 运行多工程隔离、偏好迁移、Serena 修复和 MCP 配置测试 |
 | `npm run desktop:install-linux` | 安装用户级启动项并固定到 GNOME Dock |
 | `npm test` | 运行当前完整自动化测试套件 |
 
-当前测试覆盖二进制内容、空目录、权限、符号链接、排除规则、增删改名、精确恢复、令牌拒绝、损坏检测、保留策略、并发管理器、损坏索引重建、中断删除、中断恢复、监听防抖、stdio 协议纯净性和桌面控制器恢复证据。
+当前测试覆盖二进制内容、空目录、权限、符号链接、排除规则、增删改名、精确恢复、令牌拒绝、损坏检测、保留策略、并发管理器、损坏索引重建、中断删除/恢复、监听防抖、stdio 协议纯净性、多工程停止隔离、工程窗口权限、路径重叠拒绝、偏好迁移、Serena 配置修复与 MCP initialize 握手。
 
 测试必须使用操作系统临时目录和外部备份目录，不要对本仓库或真实工程执行恢复测试。详细测试说明见 [`test/README.md`](./test/README.md)。
 
@@ -362,7 +396,8 @@ claude mcp list
 - 当前仓库提供用户级 Linux 启动项，但尚未配置可分发安装包、代码签名、自动更新、托盘常驻或云同步。
 - 默认排除的环境文件和密钥不会进入快照，因此需要独立的安全配置备份方案。
 - 硬链接去重降低本地占用，但不能替代离线副本、对象存储版本控制或异地备份。
-- 每个进程同时只激活一个工程；桌面端保持单实例，MCP 可通过独立进程并行保护多个工程。
+- 每个 stdio MCP 进程同时只激活一个工程；桌面端单实例可保护多个工程。
+- 每个启用的 Serena 工程会启动独立语言服务，工程较多时会增加内存占用；注册工程时可按需关闭 Serena，而不影响备份。
 
 ## 故障排查
 
@@ -372,6 +407,9 @@ claude mcp list
 - **恢复令牌失效**：重新生成预览；工程变化、超时或令牌已使用都会使旧令牌失效。
 - **备份目录不可写**：选择具有写权限的外部 `storageRoot`，并检查磁盘空间。
 - **桌面窗口无法启动**：确认图形会话可用，并先运行 `npm run desktop:typecheck` 与 `npm run desktop:build`。
+- **Serena 显示 `Error loading configuration`**：在工程卡片确认备份仍正常，再点击 Serena 的重新检测按钮；自动修复启用时，原配置会以 `.coderecoder-invalid-<timestamp>.bak` 保留。
+- **Cursor Serena 无法启动**：不要使用已经移除的 `serena-mcp-server` 入口；命令应为 `serena start-mcp-server --context ide --project-from-cwd`。
+- **配置建议里的 HTTP 地址变化**：这是设计行为；Electron sidecar 使用动态端口，长期连接请使用 stdio 配置。
 
 ## 项目结构
 
@@ -383,7 +421,11 @@ src/
 └── *SnapshotManager.ts         # 保留用于迁移参考的旧实现
 desktop/
 ├── assets/                     # 桌面图标资源
-├── electron/                   # Electron main、preload 和桌面控制器
+├── electron/                   # Electron main、会话注册表、安全 IPC 与集成服务
+│   ├── projectSessionRegistry.ts # 多工程注册、路径隔离与退出协调
+│   ├── projectSession.ts       # 每工程备份、监听、恢复状态与操作队列
+│   ├── serenaManager.ts        # Serena 配置、sidecar、握手与自动修复
+│   └── mcpIntegrationService.ts # 客户端预检及配置建议
 ├── renderer/                   # Vue 3 界面、组件与样式
 ├── install-linux-launcher.sh   # 用户级应用菜单与 GNOME Dock 安装器
 ├── start-coderecoder-desktop.sh # 图形会话启动包装器

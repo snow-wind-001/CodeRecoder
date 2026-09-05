@@ -1,17 +1,20 @@
 import type {
-  ActivationInput,
   CodeRecoderDesktopApi,
   DesktopDashboard,
   DesktopResult,
+  McpRecommendation,
+  ProjectDashboard,
+  ProjectRegistrationInput,
+  ProjectSummary,
   RestoreMode,
   RestoreOutcome,
   RestorePreview,
-  VerificationOutcome,
-  SnapshotSummary
+  SnapshotSummary,
+  VerificationOutcome
 } from '../../../shared/contracts.js';
 
-const demoProjectPath = '/home/user/work/CodeRecoder';
-const demoStorageRoot = '/home/user/.config/CodeRecoder/backup-storage/CodeRecoder-demo';
+const firstProjectId = 'af420000-0000-4000-8000-00000000c91a';
+const secondProjectId = 'bb190000-0000-4000-8000-0000000072ef';
 
 function demoSnapshot(
   id: string,
@@ -40,164 +43,244 @@ function demoSnapshot(
 
 function createDemoApi(): CodeRecoderDesktopApi {
   const now = Date.now();
-  let snapshots: SnapshotSummary[] = [
-    demoSnapshot('8f420000-0000-4000-8000-00000000c91a', now - 2 * 60_000, 'automatic', 'Automatic checkpoint'),
-    demoSnapshot('aa190000-0000-4000-8000-0000000072ef', now - 86 * 60_000, 'manual', 'Release candidate', {
-      changeCounts: { added: 2, modified: 6, deleted: 0, renamed: 1 },
-      storedBytes: 425_984
-    }),
-    demoSnapshot('10d40000-0000-4000-8000-00000000ab35', now - 5 * 60 * 60_000, 'activation', 'Activation baseline', {
-      changeCounts: { added: 126, modified: 0, deleted: 0, renamed: 0 },
-      storedBytes: 2_936_012
-    })
-  ];
-  let active = true;
-  let savedSetup: ActivationInput = {
-    projectPath: demoProjectPath,
-    storageRoot: '/home/user/.config/CodeRecoder/backup-storage',
-    autoCheckpoint: true,
-    maxBackups: 100
-  };
-  let recovery: DesktopDashboard['recovery'] = {
-    state: 'ready',
-    title: '恢复保护就绪',
-    detail: '最近未执行恢复，也没有待处理的回滚'
-  };
+  const configs = new Map<string, ProjectRegistrationInput>([
+    [firstProjectId, {
+      projectPath: '/home/user/work/CodeRecoder',
+      storageRoot: '/home/user/Backups/CodeRecoder',
+      autoCheckpoint: true,
+      maxBackups: 100,
+      startOnLaunch: true,
+      serenaEnabled: true,
+      serenaAutoConfigure: true
+    }],
+    [secondProjectId, {
+      projectPath: '/home/user/work/client-portal',
+      storageRoot: '/home/user/Backups/CodeRecoder',
+      autoCheckpoint: true,
+      maxBackups: 100,
+      startOnLaunch: true,
+      serenaEnabled: true,
+      serenaAutoConfigure: true
+    }]
+  ]);
+  const snapshots = new Map<string, SnapshotSummary[]>([
+    [firstProjectId, [
+      demoSnapshot('8f420000-0000-4000-8000-00000000c91a', now - 2 * 60_000, 'automatic', 'Automatic checkpoint'),
+      demoSnapshot('aa190000-0000-4000-8000-0000000072ef', now - 86 * 60_000, 'manual', 'Release candidate', {
+        changeCounts: { added: 2, modified: 6, deleted: 0, renamed: 1 }, storedBytes: 425_984
+      }),
+      demoSnapshot('10d40000-0000-4000-8000-00000000ab35', now - 5 * 60 * 60_000, 'activation', 'Activation baseline', {
+        changeCounts: { added: 126, modified: 0, deleted: 0, renamed: 0 }, storedBytes: 2_936_012
+      })
+    ]],
+    [secondProjectId, [demoSnapshot('71d40000-0000-4000-8000-00000000ab35', now - 18 * 60_000, 'automatic', 'Automatic checkpoint')]]
+  ]);
+  const running = new Set<string>([firstProjectId, secondProjectId]);
+  let selectedId: string | null = firstProjectId;
+  let recovery: ProjectDashboard['recovery'] = { state: 'ready', title: '恢复保护就绪', detail: '最近未执行恢复，也没有待处理的回滚' };
   let lastRestoreMode: RestoreMode = 'exact';
 
-  const dashboard = (): DesktopDashboard => ({
-    appVersion: '3.0.0-preview',
-    active,
-    defaultStorageRoot: '/home/user/.config/CodeRecoder/backup-storage',
-    savedSetup,
-    project: active ? {
-      name: 'CodeRecoder',
-      root: savedSetup.projectPath,
-      storageRoot: demoStorageRoot,
-      activatedAt: now - 6 * 60 * 60_000
-    } : null,
-    status: active ? {
-      state: 'ready',
-      projectRoot: savedSetup.projectPath,
-      storageRoot: demoStorageRoot,
-      externalStorage: true,
-      snapshotCount: snapshots.length,
-      latestSnapshot: snapshots[0] ?? null,
-      currentMatchesSnapshot: snapshots[0] ?? null,
-      currentTreeHash: snapshots[0]?.treeHash ?? ''.padEnd(64, '0'),
-      hasUncheckpointedChanges: false,
-      hashAlgorithm: 'sha256',
-      lastRecovery: null
-    } : null,
-    automaticCheckpoint: {
-      state: active && savedSetup.autoCheckpoint ? 'running' : 'stopped',
-      watcherReady: active && savedSetup.autoCheckpoint,
-      startedAt: active ? now - 6 * 60 * 60_000 : null,
-      lastEventAt: now - 2 * 60_000,
-      lastCheckpointAt: snapshots[0]?.createdAt ?? null,
-      lastCheckpointResult: snapshots.length > 0 ? 'created' : null,
-      pendingChangeCount: 0,
-      backupInProgress: false,
-      debounceMs: 1500,
-      reconciliationIntervalMs: 60_000,
+  const summary = (id: string): ProjectSummary => {
+    const config = configs.get(id) as ProjectRegistrationInput;
+    const projectSnapshots = snapshots.get(id) ?? [];
+    const isRunning = running.has(id);
+    const serenaReady = id === firstProjectId && isRunning;
+    return {
+      id,
+      name: config.projectPath.split('/').at(-1) ?? 'project',
+      root: config.projectPath,
+      storageRoot: `${config.storageRoot}/${config.projectPath.split('/').at(-1)}-demo`,
+      registeredAt: now - 24 * 60 * 60_000,
+      activatedAt: isRunning ? now - 6 * 60 * 60_000 : null,
+      startOnLaunch: config.startOnLaunch,
+      protectionState: isRunning ? 'running' : 'stopped',
+      snapshotCount: projectSnapshots.length,
+      latestSnapshotAt: projectSnapshots[0]?.createdAt ?? null,
+      hasUncheckpointedChanges: id === secondProjectId,
+      automaticCheckpoint: {
+        state: isRunning ? 'running' : 'stopped',
+        watcherReady: isRunning,
+        startedAt: isRunning ? now - 6 * 60 * 60_000 : null,
+        lastEventAt: id === secondProjectId ? now - 40_000 : now - 2 * 60_000,
+        lastCheckpointAt: projectSnapshots[0]?.createdAt ?? null,
+        lastCheckpointResult: projectSnapshots.length ? 'created' : null,
+        pendingChangeCount: id === secondProjectId ? 2 : 0,
+        backupInProgress: false,
+        debounceMs: 1500,
+        reconciliationIntervalMs: 60_000,
+        lastError: null
+      },
+      serena: {
+        state: !isRunning ? 'stopped' : serenaReady ? 'ready' : 'degraded',
+        enabled: true,
+        autoConfigure: true,
+        cliPath: '/home/user/.local/bin/serena',
+        configPath: `${config.projectPath}/.serena/project.yml`,
+        endpoint: serenaReady ? 'http://127.0.0.1:19123/mcp' : null,
+        pid: serenaReady ? 42117 : null,
+        startedAt: serenaReady ? now - 6 * 60 * 60_000 : null,
+        lastCheckedAt: now - 12_000,
+        lastError: id === secondProjectId ? 'Error loading configuration；原配置已保留，可重新检测' : null,
+        lastLog: null,
+        repairedConfigBackup: null
+      },
       lastError: null
-    },
-    snapshots: active ? snapshots : [],
-    recovery
-  });
+    };
+  };
 
+  const projectDashboard = (id: string): ProjectDashboard => {
+    const projectSummary = summary(id);
+    const projectSnapshots = snapshots.get(id) ?? [];
+    return {
+      project: projectSummary,
+      config: { ...(configs.get(id) as ProjectRegistrationInput) },
+      status: running.has(id) ? {
+        state: 'ready',
+        projectRoot: projectSummary.root,
+        storageRoot: projectSummary.storageRoot,
+        externalStorage: true,
+        snapshotCount: projectSnapshots.length,
+        latestSnapshot: projectSnapshots[0] ?? null,
+        currentMatchesSnapshot: id === secondProjectId ? null : projectSnapshots[0] ?? null,
+        currentTreeHash: projectSnapshots[0]?.treeHash ?? ''.padEnd(64, '0'),
+        hasUncheckpointedChanges: id === secondProjectId,
+        hashAlgorithm: 'sha256',
+        lastRecovery: null
+      } : null,
+      snapshots: projectSnapshots,
+      recovery
+    };
+  };
+
+  const dashboard = (): DesktopDashboard => ({
+    schemaVersion: 2,
+    appVersion: '3.1.0-preview',
+    defaultStorageRoot: '/home/user/.config/CodeRecoder/backup-storage',
+    window: { kind: 'main', projectId: null },
+    selectedProjectId: selectedId,
+    projects: [...configs.keys()].map(summary),
+    selectedProject: selectedId && configs.has(selectedId) ? projectDashboard(selectedId) : null
+  });
   const ok = <T>(message: string, data?: T): DesktopResult<T> => ({ success: true, message, data });
 
   return {
     bootstrap: async () => ok('预览数据已加载', structuredClone(dashboard())),
-    refresh: async () => ok('预览数据已刷新', structuredClone(dashboard())),
-    chooseDirectory: async kind => ok('目录已选择', {
-      path: kind === 'project' ? demoProjectPath : savedSetup.storageRoot ?? null
-    }),
-    activate: async input => {
-      savedSetup = { ...input };
-      active = true;
-      return ok('工程已激活');
+    refresh: async projectId => {
+      if (projectId && configs.has(projectId)) selectedId = projectId;
+      return ok('预览数据已刷新', structuredClone(dashboard()));
     },
-    deactivate: async () => {
-      active = false;
-      return ok('工程监控已安全停止');
-    },
-    createSnapshot: async input => {
+    chooseDirectory: async kind => ok('目录已选择', { path: kind === 'project' ? '/home/user/work/new-project' : '/home/user/Backups/CodeRecoder' }),
+    registerProject: async input => {
       const id = crypto.randomUUID();
-      snapshots = [demoSnapshot(id, Date.now(), 'manual', input.name ?? 'Manual backup'), ...snapshots];
-      return ok('Verified code backup created', { snapshot: snapshots[0] });
+      configs.set(id, { ...input });
+      snapshots.set(id, [demoSnapshot(crypto.randomUUID(), Date.now(), 'activation', 'Activation baseline')]);
+      running.add(id);
+      selectedId = id;
+      return ok('工程保护已启动', { projectId: id });
     },
-    verifySnapshot: async snapshotId => ok('备份验证通过', {
-      snapshotId,
+    selectProject: async id => {
+      selectedId = id;
+      return ok('工程已选择', structuredClone(dashboard()));
+    },
+    startProject: async id => { running.add(id); return ok('工程保护已启动'); },
+    stopProject: async ({ projectId }) => { running.delete(projectId); return ok('工程监控已安全停止'); },
+    removeProject: async ({ projectId }) => {
+      configs.delete(projectId); snapshots.delete(projectId); running.delete(projectId);
+      selectedId = configs.keys().next().value ?? null;
+      return ok('工程已移除');
+    },
+    openProjectWindow: async () => ok('工程窗口已打开'),
+    createSnapshot: async input => {
+      const list = snapshots.get(input.projectId) ?? [];
+      list.unshift(demoSnapshot(crypto.randomUUID(), Date.now(), 'manual', input.name ?? 'Manual backup'));
+      snapshots.set(input.projectId, list);
+      return ok('Verified code backup created', { snapshot: list[0] });
+    },
+    verifySnapshot: async input => ok('备份验证通过', {
+      snapshotId: input.snapshotId,
       verification: 'verified' as const,
-      treeHash: snapshots.find(snapshot => snapshot.id === snapshotId)?.treeHash,
-      verifiedEntries: snapshots.find(snapshot => snapshot.id === snapshotId)?.totalFiles ?? 0
+      treeHash: snapshots.get(input.projectId)?.find(item => item.id === input.snapshotId)?.treeHash,
+      verifiedEntries: 126
     }),
     previewRestore: async ({ snapshotId, mode }) => {
-      const snapshot = snapshots.find(item => item.id === snapshotId);
-      if (!snapshot) return { success: false, message: '快照不存在', error: 'Snapshot not found' };
-      recovery = {
-        state: 'preview-ready',
-        title: '恢复预览等待确认',
-        detail: '尚未修改工程文件；确认令牌将在五分钟后失效',
-        occurredAt: Date.now(),
-        snapshotId
-      };
       lastRestoreMode = mode;
+      recovery = { state: 'preview-ready', title: '恢复预览等待确认', detail: '尚未修改工程文件；确认令牌将在五分钟后失效', occurredAt: Date.now(), snapshotId };
       return ok('恢复预览已生成', {
         state: 'restore_preview' as const,
         snapshotId,
-        snapshotName: snapshot.name,
+        snapshotName: 'Verified snapshot',
         mode,
-        changes: {
-          added: ['src/new-feature.ts'],
-          modified: ['src/index.ts', 'README.md', 'package.json', 'test/backup-system.test.js'],
-          deleted: ['src/old-adapter.ts', 'docs/legacy.md'],
-          renamed: []
-        },
-        counts: { added: 1, modified: 4, deleted: 2, renamed: 0 },
+        changes: { added: ['src/new-feature.ts'], modified: ['src/index.ts', 'README.md'], deleted: ['src/old-adapter.ts'], renamed: [] },
+        counts: { added: 1, modified: 2, deleted: 1, renamed: 0 },
         confirmationToken: crypto.randomUUID(),
         expiresAt: Date.now() + 5 * 60_000,
         requiresConfirmation: true as const
       });
     },
     restoreSnapshot: async ({ snapshotId }) => {
-      recovery = {
-        state: 'restored',
-        title: '恢复完成并通过校验',
-        detail: '目标快照已应用，恢复前安全备份已保留',
-        occurredAt: Date.now(),
-        snapshotId,
-        preRestoreSnapshotId: crypto.randomUUID()
-      };
-      return ok('代码恢复完成并通过校验', {
-        state: 'restored_verified' as const,
-        snapshotId,
-        mode: lastRestoreMode,
-        preRestoreSnapshotId: recovery.preRestoreSnapshotId,
-        verification: 'verified' as const
-      });
-    }
+      recovery = { state: 'restored', title: '恢复完成并通过校验', detail: '目标快照已应用，恢复前安全备份已保留', occurredAt: Date.now(), snapshotId, preRestoreSnapshotId: crypto.randomUUID() };
+      return ok('代码恢复完成并通过校验', { state: 'restored_verified' as const, snapshotId, mode: lastRestoreMode, preRestoreSnapshotId: recovery.preRestoreSnapshotId, verification: 'verified' as const });
+    },
+    restartSerena: async id => ok('Serena 已通过 MCP initialize 握手', summary(id).serena),
+    inspectMcpEnvironment: async projectId => ok('MCP 环境检查完成', {
+      checkedAt: Date.now(), projectId: projectId ?? null, ready: true,
+      items: [
+        { id: 'node' as const, label: 'Node.js', status: 'available' as const, required: true, path: '/usr/bin/node', version: '22.20.0', detail: '满足要求' },
+        { id: 'server-build' as const, label: 'CodeRecoder MCP 构建', status: 'available' as const, required: true, path: '/workspace/dist/index.js', version: null, detail: 'stdio 服务入口可用' },
+        { id: 'serena' as const, label: 'Serena CLI', status: 'available' as const, required: false, path: '/home/user/.local/bin/serena', version: '1.7.1', detail: 'CLI 可用' },
+        { id: 'serena-project' as const, label: 'Serena 工程配置', status: projectId ? 'available' as const : 'warning' as const, required: false, path: projectId ? '/project/.serena/project.yml' : null, version: null, detail: '工程配置' },
+        ...([
+          ['vscode', 'Visual Studio Code'],
+          ['cursor', 'Cursor'],
+          ['claude-code', 'Claude Code'],
+          ['codex', 'Codex CLI']
+        ] as const).map(([id, label]) => ({ id, label, status: 'available' as const, required: false, path: `/usr/bin/${id}`, version: 'installed', detail: '本机客户端可用' }))
+      ]
+    }),
+    getMcpRecommendation: async input => ok('配置建议已生成', demoRecommendation(input.target, input.service, input.projectId)),
+    copyMcpRecommendation: async () => ok('配置建议已复制到剪贴板'),
+    onStateChanged: () => () => undefined
+  };
+}
+
+function demoRecommendation(target: McpRecommendation['target'], service: McpRecommendation['service'], projectId?: string): McpRecommendation {
+  const json = service === 'coderecorder'
+    ? `{\n  "${target === 'vscode' ? 'servers' : 'mcpServers'}": {\n    "coderecorder": {\n      "command": "/usr/bin/node",\n      "args": ["/workspace/dist/index.js"]\n    }\n  }\n}`
+    : `{\n  "${target === 'vscode' ? 'servers' : 'mcpServers'}": {\n    "serena": {\n      "command": "/home/user/.local/bin/serena",\n      "args": ["start-mcp-server", "--context", "ide", "--project", "/workspace"]\n    }\n  }\n}`;
+  return {
+    target,
+    service,
+    title: `${target} · ${service}`,
+    format: target === 'claude-code' || target === 'codex' ? 'shell' : 'json',
+    configPath: target === 'vscode' ? '.vscode/mcp.json' : target === 'cursor' ? '~/.cursor/mcp.json' : '通过 CLI 写入用户配置',
+    content: target === 'claude-code' || target === 'codex' ? `${target === 'codex' ? 'codex' : 'claude'} mcp add ${service} -- /usr/bin/node /workspace/dist/index.js` : json,
+    notes: ['不会自动覆盖现有客户端配置。', '恢复与删除工具不要设置为无条件自动批准。'],
+    endpoint: service === 'serena' && projectId ? 'http://127.0.0.1:19123/mcp' : null,
+    endpointIsTemporary: service === 'serena' && Boolean(projectId)
   };
 }
 
 function unavailableApi(): CodeRecoderDesktopApi {
-  const unavailable = async <T = unknown>(): Promise<DesktopResult<T>> => ({
-    success: false,
-    message: '桌面桥接不可用',
-    error: '请通过 Electron 启动 CodeRecoder Desktop'
-  });
+  const unavailable = async <T = unknown>(): Promise<DesktopResult<T>> => ({ success: false, message: '桌面桥接不可用', error: '请通过 Electron 启动 CodeRecoder Desktop' });
   return {
     bootstrap: async () => await unavailable<DesktopDashboard>(),
     chooseDirectory: async () => await unavailable<{ path: string | null }>(),
-    activate: async () => await unavailable(),
-    deactivate: async () => await unavailable(),
+    registerProject: async () => await unavailable<{ projectId: string }>(),
+    selectProject: async () => await unavailable<DesktopDashboard>(),
+    startProject: async () => await unavailable(),
+    stopProject: async () => await unavailable(),
+    removeProject: async () => await unavailable(),
+    openProjectWindow: async () => await unavailable(),
     refresh: async () => await unavailable<DesktopDashboard>(),
     createSnapshot: async () => await unavailable(),
     verifySnapshot: async () => await unavailable<VerificationOutcome>(),
     previewRestore: async () => await unavailable<RestorePreview>(),
-    restoreSnapshot: async () => await unavailable<RestoreOutcome>()
+    restoreSnapshot: async () => await unavailable<RestoreOutcome>(),
+    restartSerena: async () => await unavailable(),
+    inspectMcpEnvironment: async () => await unavailable(),
+    getMcpRecommendation: async () => await unavailable(),
+    copyMcpRecommendation: async () => await unavailable(),
+    onStateChanged: () => () => undefined
   };
 }
 

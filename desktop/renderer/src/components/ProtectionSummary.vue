@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { DatabaseBackup, LoaderCircle } from '@lucide/vue';
-import type { DesktopDashboard } from '../../../shared/contracts.js';
+import type { ProjectDashboard } from '../../../shared/contracts.js';
 import { formatRelative } from '../services/format.js';
 
 const props = defineProps<{
-  dashboard: DesktopDashboard;
+  project: ProjectDashboard;
   busy: boolean;
 }>();
 
@@ -13,8 +13,8 @@ defineEmits<{
   backup: [];
 }>();
 
-const automatic = computed(() => props.dashboard.automaticCheckpoint);
-const status = computed(() => props.dashboard.status);
+const automatic = computed(() => props.project.project.automaticCheckpoint);
+const status = computed(() => props.project.status);
 const latestAt = computed(() => status.value?.latestSnapshot?.createdAt ?? automatic.value.lastCheckpointAt);
 
 const presentation = computed(() => {

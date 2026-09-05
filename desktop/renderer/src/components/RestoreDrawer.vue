@@ -20,6 +20,7 @@ import { formatDate } from '../services/format.js';
 
 const props = defineProps<{
   open: boolean;
+  projectId: string | null;
   snapshot: SnapshotSummary | null;
 }>();
 
@@ -105,13 +106,14 @@ watch(mode, async () => {
 onBeforeUnmount(clearClock);
 
 async function loadPreview(): Promise<void> {
-  if (!props.snapshot) return;
+  if (!props.snapshot || !props.projectId) return;
   const sequence = ++previewSequence;
   loading.value = true;
   preview.value = null;
   error.value = '';
   try {
     const response = await getDesktopApi().previewRestore({
+      projectId: props.projectId,
       snapshotId: props.snapshot.id,
       mode: mode.value
     });
@@ -132,11 +134,12 @@ async function loadPreview(): Promise<void> {
 }
 
 async function confirmRestore(): Promise<void> {
-  if (!props.snapshot || !preview.value || !canConfirm.value) return;
+  if (!props.snapshot || !props.projectId || !preview.value || !canConfirm.value) return;
   restoring.value = true;
   error.value = '';
   try {
     const response = await getDesktopApi().restoreSnapshot({
+      projectId: props.projectId,
       snapshotId: props.snapshot.id,
       confirmationToken: preview.value.confirmationToken
     });

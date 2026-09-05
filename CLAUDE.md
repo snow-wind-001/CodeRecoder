@@ -13,7 +13,7 @@ An active project belongs only to the current MCP process. Never persist or rest
 - `BackupManager` creates complete logical snapshots and owns manifests, SHA-256 verification, atomic indexes, retention, locks, restore tokens, safety backups, rollback, and startup recovery.
 - `AutoCheckpointManager` watches the active tree, coalesces events, queues writes during backup, and performs periodic reconciliation.
 - `CodeRecoderServer` exposes validated MCP tools, annotations, structured output, process-local activation, and watcher coordination.
-- `DesktopBackupController` adapts the same managers for the Electron UI; preload exposes only typed, allowlisted IPC calls, and renderer code has no Node access.
+- `ProjectSessionRegistry` owns isolated desktop sessions; each `ProjectSession` has its own backup manager, watcher, queue, recovery state, and Serena sidecar. Preload exposes only typed, allowlisted, project-scoped IPC, and renderer code has no Node access.
 - Older managers still compile for migration reference but are not production entry points. Their optional AI providers must remain explicitly unavailable unless a real transport and health check are implemented.
 
 ## Non-Negotiable Restore Invariants
@@ -32,7 +32,7 @@ npm run lint       # strict TypeScript check
 npm run build      # emit ESM into dist/
 npm run test:quick # backup, restore, concurrency, recovery, watcher
 npm run test:mcp   # real MCP initialize/list/call lifecycle
-npm run test:desktop # desktop controller activation/restore lifecycle
+npm run test:desktop # multi-project, migration, Serena repair, and desktop lifecycle
 npm run desktop:build # type-check and build Electron + Vue
 npm test           # canonical full suite
 ```
