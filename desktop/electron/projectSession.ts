@@ -151,6 +151,8 @@ export class ProjectSession {
 
         // Serena is an optional sidecar. Its failure never changes backup health.
         const serenaStatus = await this.scheduler.schedule(async () => await this.serena.start());
+        const summary = this.getSummary();
+        console.error(`[${this.id}] protection started: protection=${summary.protectionState}, checkpoints=${summary.automaticCheckpoint.state}, serena=${serenaStatus.state}, snapshots=${summary.snapshotCount}`);
         return {
           success: true,
           message: this.protectionState === 'degraded'
@@ -160,7 +162,7 @@ export class ProjectSession {
               : serenaStatus.state === 'disabled'
                 ? '工程保护已启动'
                 : '工程保护与 Serena 会话已启动',
-          data: this.getSummary()
+          data: summary
         };
       } catch (error) {
         await this.watcher?.stop().catch(() => undefined);
