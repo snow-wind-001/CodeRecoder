@@ -247,6 +247,7 @@ function createDemoApi(): CodeRecoderDesktopApi {
       if (running.has(id) && configs.get(id)?.serenaEnabled) serenaReady.add(id);
       return ok('Serena 已通过 MCP initialize 握手', summary(id).serena);
     },
+    installSerena: async () => ok('演示：Serena 安装完成', { path: '/home/user/.local/bin/serena', logPath: '/home/user/.local/state/coderecoder/serena-install.log' }),
     inspectMcpEnvironment: async projectId => ok('MCP 环境检查完成', {
       checkedAt: Date.now(), projectId: projectId ?? null, ready: true,
       items: [
@@ -269,8 +270,8 @@ function createDemoApi(): CodeRecoderDesktopApi {
 }
 
 function demoRecommendation(target: McpRecommendation['target'], service: McpRecommendation['service'], projectId?: string): McpRecommendation {
-  const command = service === 'coderecorder' ? '/usr/bin/node' : '/home/user/.local/bin/serena';
-  const args = service === 'coderecorder'
+  const command = service === 'coderecoder' ? '/usr/bin/node' : '/home/user/.local/bin/serena';
+  const args = service === 'coderecoder'
     ? ['/workspace/dist/index.js']
     : [
         'start-mcp-server',
@@ -327,6 +328,7 @@ function unavailableApi(): CodeRecoderDesktopApi {
     previewRestore: async () => await unavailable<RestorePreview>(),
     restoreSnapshot: async () => await unavailable<RestoreOutcome>(),
     restartSerena: async () => await unavailable(),
+    installSerena: async () => await unavailable(),
     inspectMcpEnvironment: async () => await unavailable(),
     getMcpRecommendation: async () => await unavailable(),
     copyMcpRecommendation: async () => await unavailable(),

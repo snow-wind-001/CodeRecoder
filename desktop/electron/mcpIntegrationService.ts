@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants as fsConstants, promises as nodeFs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { mcpEnvironment } from './mcpEnvironment.js';
 import type {
   EnvironmentCheckItem,
   McpClientTarget,
@@ -36,19 +37,22 @@ export class McpIntegrationService {
   private readonly repositoryRoot: string;
   private readonly serverEntry: string;
 
-  constructor(repositoryRoot: string) {
+  constructor(repositoryRoot: string, private readonly options: { bundledMcpLauncher?: string } = {}) {
     this.repositoryRoot = path.resolve(repositoryRoot);
     this.serverEntry = path.join(this.repositoryRoot, 'dist', 'index.js');
   }
 
   async inspect(project: McpProjectContext | null): Promise<McpEnvironmentReport> {
-    const nodePath = await this.findExecutable('node');
-    const nodeVersionOutput = nodePath ? await this.readVersion(nodePath, ['--version']) : null;
+    const nodePath = this.options.bundledMcpLauncher ?? await this.findExecutable('node');
+    const nodeVersionOutput = this.options.bundledMcpLauncher
+      ? process.versions.node
+      : nodePath ? await this.readVersion(nodePath, ['--version']) : null;
     const nodeVersion = nodeVersionOutput?.replace(/^v/, '') ?? null;
     const nodeReady = nodePath !== null
       && nodeVersion !== null
       && this.compareVersions(nodeVersion, '22.12.0') >= 0;
-    const serverReady = await this.isFile(this.serverEntry);
+    const serverReady = await this.isFile(this.serverEntry)
+      && (!this.options.bundledMcpLauncher || await this.isFile(this.options.bundledMcpLauncher));
     const serenaPath = project?.serena.cliPath ?? await this.findExecutable('serena');
     const serenaVersion = serenaPath ? await this.readVersion(serenaPath, ['--version']) : null;
     const serenaConfig = project ? path.join(project.root, '.serena', 'project.yml') : null;
@@ -57,7 +61,7 @@ export class McpIntegrationService {
     const items: EnvironmentCheckItem[] = [
       {
         id: 'node',
-        label: 'Node.js',
+        label: this.options.bundledMcpLauncher ? '内置 Node.js' : 'Node.js',
         status: nodeReady ? 'available' : 'warning',
         required: true,
         path: nodePath,
@@ -78,11 +82,12 @@ export class McpIntegrationService {
       {
         id: 'serena',
         label: 'Serena CLI',
-        status: serenaPath ? 'available' : 'missing',
+        status: serenaVersion ? 'available' : serenaPath ? 'warning' : 'missing',
         required: false,
         path: serenaPath,
         version: serenaVersion,
-        detail: serenaPath ? 'CLI 可用于客户端连接和桌面 sidecar' : '未在安全候选路径或 PATH 中找到 serena'
+        detail: serenaVersion ? 'CLI 可用于客户端连接和桌面 sidecar'
+          : serenaPath ? 'CLI 版本检查失败，可重新安装后复查' : '未在安全候选路径或 PATH 中找到 serena'
       },
       {
         id: 'serena-project',
@@ -129,11 +134,11 @@ export class McpIntegrationService {
     if (service === 'serena' && !project) {
       throw new Error('生成 Serena 配置前必须选择一个工程');
     }
-    const command = service === 'coderecorder'
-      ? await this.findExecutable('node') ?? 'node'
+    const command = service === 'coderecoder'
+      ? this.options.bundledMcpLauncher ?? await this.findExecutable('node') ?? 'node'
       : project?.serena.cliPath ?? await this.findExecutable('serena') ?? 'serena';
-    const args = service === 'coderecorder'
-      ? [this.serverEntry]
+    const args = service === 'coderecoder'
+      ? this.options.bundledMcpLauncher ? [] : [this.serverEntry]
       : [
           'start-mcp-server',
           '--context',
@@ -149,13 +154,16 @@ export class McpIntegrationService {
         ];
     const serverName = service;
     const endpoint = service === 'serena' ? project?.serena.endpoint ?? null : null;
-    const notes = service === 'coderecorder'
+    const notes = service === 'coderecoder'
       ? [
           '连接后由客户端调用 activate_project 选择工程；恢复与删除工具不要设置为无条件自动批准。',
-          '修改 TypeScript 源码后先运行 npm run build，配置不应指向 src/index.ts。'
+          this.options.bundledMcpLauncher
+            ? '使用安装包内置运行时，无需另行安装 Node.js 或保留源码目录。'
+            : '修改 TypeScript 源码后先运行 npm run build，配置不应指向 src/index.ts。'
         ]
       : [
           '推荐使用 stdio 配置；Electron 显示的 HTTP endpoint 只在当前工程会话存活期间有效。',
+          ...(target === 'codex' ? ['首次启动可能下载语言服务；可在 [mcp_servers.serena] 中设置 startup_timeout_sec = 120 和 tool_timeout_sec = 240，保存后重启 Codex。'] : []),
           '若出现 Error loading configuration，请在桌面端查看 Serena 状态并使用“重新检测/启动”。'
         ];
 
@@ -207,6 +215,8 @@ export class McpIntegrationService {
   private async findExecutable(name: string): Promise<string | null> {
     const executableName = process.platform === 'win32' ? `${name}.exe` : name;
     const candidates = [
+      ...(name === 'serena' && process.env.CODERECODER_SERENA_PATH && path.isAbsolute(process.env.CODERECODER_SERENA_PATH)
+        ? [process.env.CODERECODER_SERENA_PATH] : []),
       path.join(os.homedir(), '.local', 'bin', executableName),
       ...((process.env.PATH ?? '').split(path.delimiter)
         .filter(directory => directory && path.isAbsolute(directory))
@@ -230,7 +240,8 @@ export class McpIntegrationService {
     try {
       const output = await new Promise<string>((resolve, reject) => {
         const child = spawn(command, args, {
-          cwd: this.repositoryRoot,
+          cwd: os.homedir(),
+          env: mcpEnvironment(),
           shell: false,
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe']
@@ -287,7 +298,7 @@ export class McpIntegrationService {
   }
 
   private serviceLabel(service: McpServiceTarget): string {
-    return service === 'coderecorder' ? 'CodeRecoder' : 'Serena';
+    return service === 'coderecoder' ? 'CodeRecoder' : 'Serena';
   }
 
   private shellQuote(value: string): string {

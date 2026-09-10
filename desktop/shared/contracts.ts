@@ -13,6 +13,7 @@ export const DESKTOP_IPC = {
   previewRestore: 'coderecoder:preview-restore',
   restoreSnapshot: 'coderecoder:restore-snapshot',
   restartSerena: 'coderecoder:restart-serena',
+  installSerena: 'coderecoder:install-serena',
   inspectMcpEnvironment: 'coderecoder:inspect-mcp-environment',
   getMcpRecommendation: 'coderecoder:get-mcp-recommendation',
   copyMcpRecommendation: 'coderecoder:copy-mcp-recommendation',
@@ -27,7 +28,7 @@ export type ProtectionState = 'starting' | 'running' | 'degraded' | 'stopped';
 export type SerenaState = 'disabled' | 'checking' | 'configuring' | 'starting' | 'ready' | 'degraded' | 'stopped';
 export type DesktopWindowKind = 'main' | 'project';
 export type McpClientTarget = 'vscode' | 'cursor' | 'claude-code' | 'codex';
-export type McpServiceTarget = 'coderecorder' | 'serena';
+export type McpServiceTarget = 'coderecoder' | 'serena';
 
 export interface DesktopResult<T = unknown> {
   success: boolean;
@@ -277,6 +278,7 @@ export interface CodeRecoderDesktopApi {
   previewRestore(input: { projectId: ProjectId; snapshotId: string; mode: RestoreMode }): Promise<DesktopResult<RestorePreview>>;
   restoreSnapshot(input: { projectId: ProjectId; snapshotId: string; confirmationToken: string }): Promise<DesktopResult<RestoreOutcome>>;
   restartSerena(projectId: ProjectId): Promise<DesktopResult<SerenaStatus>>;
+  installSerena(): Promise<DesktopResult<{ path: string; logPath: string }>>;
   inspectMcpEnvironment(projectId?: ProjectId): Promise<DesktopResult<McpEnvironmentReport>>;
   getMcpRecommendation(input: { target: McpClientTarget; service: McpServiceTarget; projectId?: ProjectId }): Promise<DesktopResult<McpRecommendation>>;
   copyMcpRecommendation(input: { target: McpClientTarget; service: McpServiceTarget; projectId?: ProjectId }): Promise<DesktopResult>;

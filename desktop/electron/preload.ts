@@ -46,7 +46,7 @@ function requireTarget(value: unknown): McpClientTarget {
 }
 
 function requireService(value: unknown): McpServiceTarget {
-  if (value === 'coderecorder' || value === 'serena') return value;
+  if (value === 'coderecoder' || value === 'serena') return value;
   throw new TypeError('MCP service target is invalid');
 }
 
@@ -161,6 +161,7 @@ const api: CodeRecoderDesktopApi = Object.freeze({
     DESKTOP_IPC.restartSerena,
     requireUuid(projectId, 'projectId')
   ),
+  installSerena: async () => await ipcRenderer.invoke(DESKTOP_IPC.installSerena),
   inspectMcpEnvironment: async (projectId?: string) => await ipcRenderer.invoke(
     DESKTOP_IPC.inspectMcpEnvironment,
     projectId === undefined ? undefined : requireUuid(projectId, 'projectId')

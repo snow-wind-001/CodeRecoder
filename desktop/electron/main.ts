@@ -9,6 +9,7 @@ import {
   type IpcMainInvokeEvent
 } from 'electron';
 import { McpIntegrationService } from './mcpIntegrationService.js';
+import { SerenaInstaller } from './serenaInstaller.js';
 import {
   ProjectSessionRegistry,
   type RegistryWindowScope
@@ -79,6 +80,7 @@ if (!hasSingleInstanceLock) app.quit();
 let mainWindow: BrowserWindow | null = null;
 let registry: ProjectSessionRegistry | undefined;
 let integrationService: McpIntegrationService | undefined;
+let serenaInstaller: SerenaInstaller | undefined;
 let quitIsReady = false;
 let quitIsPending = false;
 const projectWindows = new Map<ProjectId, BrowserWindow>();
@@ -219,7 +221,7 @@ function requireIntegrationTarget(value: unknown): McpClientTarget {
 }
 
 function requireServiceTarget(value: unknown): McpServiceTarget {
-  if (value === 'coderecorder' || value === 'serena') return value;
+  if (value === 'coderecoder' || value === 'serena') return value;
   throw new Error('MCP service target is invalid');
 }
 
@@ -352,6 +354,11 @@ function registerIpcHandlers(activeRegistry: ProjectSessionRegistry, integration
       data: { path: result.canceled ? null : result.filePaths[0] ?? null }
     };
   });
+  handle(DESKTOP_IPC.installSerena, async event => {
+    trustedScope(event);
+    if (!serenaInstaller) throw new Error('Serena 安装器尚未就绪');
+    return { success: true, message: 'Serena 安装完成', data: await serenaInstaller.install() };
+  });
   handle(DESKTOP_IPC.inspectMcpEnvironment, async (event, requestedProjectId: unknown) => {
     const scope = trustedScope(event);
     const projectId = resolveProjectId(scope, requestedProjectId);
@@ -388,7 +395,14 @@ function registerIpcHandlers(activeRegistry: ProjectSessionRegistry, integration
 
 async function startDesktop(): Promise<void> {
   const userDataRoot = app.getPath('userData');
-  integrationService = new McpIntegrationService(repositoryRoot);
+  const binaryDirectory = path.resolve(process.resourcesPath, '../bin');
+  integrationService = new McpIntegrationService(repositoryRoot, app.isPackaged
+    ? { bundledMcpLauncher: path.join(binaryDirectory, 'coderecoder-mcp') }
+    : {});
+  serenaInstaller = new SerenaInstaller(
+    app.isPackaged ? path.join(binaryDirectory, 'coderecoder-install-serena') : path.join(repositoryRoot, 'scripts/install-serena.sh'),
+    app.getPath('logs')
+  );
   registry = new ProjectSessionRegistry({
     appVersion: app.getVersion(),
     defaultStorageRoot: path.join(userDataRoot, 'backup-storage'),
@@ -428,6 +442,7 @@ if (hasSingleInstanceLock) {
     event.preventDefault();
     if (quitIsPending) return;
     quitIsPending = true;
+    serenaInstaller?.stop();
     const shutdown = registry ? registry.shutdown() : Promise.resolve();
     void shutdown
       .catch(error => console.error('CodeRecoder Desktop shutdown failed:', error))

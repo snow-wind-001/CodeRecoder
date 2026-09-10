@@ -16,7 +16,7 @@ test('MCP lifecycle advertises and executes the production backup surface', asyn
   await fs.writeFile(path.join(projectRoot, 'index.ts'), 'export const ready = true;\n');
 
   const server = new CodeRecoderServer();
-  const client = new Client({ name: 'coderecorder-test-client', version: '1.0.0' });
+  const client = new Client({ name: 'coderecoder-test-client', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   t.after(async () => {
     await client.close().catch(() => undefined);

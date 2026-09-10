@@ -6,6 +6,7 @@ import test from 'node:test';
 import { ProjectSessionRegistry } from '../desktop/electron/projectSessionRegistry.js';
 import { SerenaProcessManager } from '../desktop/electron/serenaManager.js';
 import { McpIntegrationService } from '../desktop/electron/mcpIntegrationService.js';
+import { SerenaInstaller } from '../desktop/electron/serenaInstaller.js';
 import {
   assertMainWindow,
   assertProjectAccess,
@@ -213,6 +214,9 @@ const http = require('node:http');
 const path = require('node:path');
 const args = process.argv.slice(2);
 if (args[0] === 'project' && args[1] === 'create') {
+  // Model Serena's optional-language prompt: EOF without an answer must abort.
+  const answer = fs.readFileSync(0, 'utf8');
+  if (!answer.startsWith('n\\n')) process.exit(4);
   const root = args[2];
   fs.mkdirSync(path.join(root, '.serena'), { recursive: true });
   fs.writeFileSync(path.join(root, '.serena', 'project.yml'), 'project_name: repaired\\nlanguage_servers: []\\n');
@@ -279,14 +283,14 @@ test('MCP advisor uses an independent Node executable and valid client schemas',
   assert.equal(node?.status, 'available');
   assert.match(node?.path ?? '', /node$/);
 
-  const vscode = await advisor.recommendation('vscode', 'coderecorder', null);
-  const vscodeConfig = JSON.parse(vscode.content) as { servers: { coderecorder: { command: string; args: string[] } } };
-  assert.match(vscodeConfig.servers.coderecorder.command, /node$/);
-  assert.equal(vscodeConfig.servers.coderecorder.args[0], path.join(repositoryRoot, 'dist', 'index.js'));
+  const vscode = await advisor.recommendation('vscode', 'coderecoder', null);
+  const vscodeConfig = JSON.parse(vscode.content) as { servers: { coderecoder: { command: string; args: string[] } } };
+  assert.match(vscodeConfig.servers.coderecoder.command, /node$/);
+  assert.equal(vscodeConfig.servers.coderecoder.args[0], path.join(repositoryRoot, 'dist', 'index.js'));
 
-  const cursor = await advisor.recommendation('cursor', 'coderecorder', null);
-  const cursorConfig = JSON.parse(cursor.content) as { mcpServers: { coderecorder: unknown } };
-  assert.ok(cursorConfig.mcpServers.coderecorder);
+  const cursor = await advisor.recommendation('cursor', 'coderecoder', null);
+  const cursorConfig = JSON.parse(cursor.content) as { mcpServers: { coderecoder: unknown } };
+  assert.ok(cursorConfig.mcpServers.coderecoder);
 
   const project = advisor.projectContext(
     'af420000-0000-4000-8000-00000000c91a',
@@ -307,7 +311,7 @@ test('MCP advisor uses an independent Node executable and valid client schemas',
     }
   );
   for (const target of ['vscode', 'cursor', 'claude-code', 'codex'] as const) {
-    const codeRecoder = await advisor.recommendation(target, 'coderecorder', project);
+    const codeRecoder = await advisor.recommendation(target, 'coderecoder', project);
     const serena = await advisor.recommendation(target, 'serena', project);
     assert.equal(codeRecoder.endpointIsTemporary, false);
     assert.equal(serena.endpointIsTemporary, true);
@@ -327,6 +331,52 @@ test('MCP advisor uses an independent Node executable and valid client schemas',
       if (target === 'codex') assert.match(serena.content, /--context codex/);
     }
   }
+});
+
+test('packaged MCP recommendations use the installed launcher without source arguments', async t => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder-packaged-advisor-'));
+  t.after(async () => await fs.rm(fixture, { recursive: true, force: true }));
+  const launcher = path.join(fixture, 'coderecoder-mcp');
+  await fs.writeFile(launcher, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const advisor = new McpIntegrationService(path.resolve(import.meta.dirname, '..'), { bundledMcpLauncher: launcher });
+  const report = await advisor.inspect(null);
+  assert.equal(report.ready, true);
+  const recommendation = await advisor.recommendation('cursor', 'coderecoder', null);
+  const config = JSON.parse(recommendation.content);
+  assert.equal(config.mcpServers.coderecoder.command, launcher);
+  assert.deepEqual(config.mcpServers.coderecoder.args, []);
+});
+
+test('Serena installer shares one download and preserves failure diagnostics', async t => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder-installer-'));
+  const script = path.join(fixture, 'installer.sh');
+  const installer = new SerenaInstaller(script, fixture);
+  t.after(async () => { installer.stop(); await fs.rm(fixture, { recursive: true, force: true }); });
+  await fs.writeFile(script, '#!/bin/sh\nprintf "simulated download failure\\n" >&2\nexit 17\n');
+  const first = installer.install();
+  assert.equal(installer.install(), first);
+  await assert.rejects(first, /Serena 安装未完成/);
+  const log = await fs.readFile(path.join(fixture, 'serena-install.log'), 'utf8');
+  assert.match(log, /simulated download failure/);
+  assert.equal(log.match(/Installing Serena/g)?.length, 1);
+});
+
+test('Serena installer stops a downloader that ignores SIGTERM', async t => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder-installer-stop-'));
+  const script = path.join(fixture, 'installer.sh');
+  const installer = new SerenaInstaller(script, fixture);
+  t.after(async () => { installer.stop(); await fs.rm(fixture, { recursive: true, force: true }); });
+  await fs.writeFile(script, '#!/bin/sh\ntrap "" TERM\nprintf "downloader ready\\n"\nsleep 30\n');
+  const installation = installer.install();
+  const rejected = assert.rejects(installation, /Serena 安装未完成/);
+  const deadline = Date.now() + 5_000;
+  while (!(await fs.readFile(path.join(fixture, 'serena-install.log'), 'utf8').catch(() => '')).includes('downloader ready')) {
+    assert.ok(Date.now() < deadline, 'downloader did not start');
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  installer.stop();
+  await rejected;
+  await assert.rejects(installer.install(), /已取消/);
 });
 
 test('project windows are bound to one session while the main window may coordinate all', () => {

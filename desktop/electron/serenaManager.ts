@@ -4,6 +4,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import type { SerenaStatus } from '../shared/contracts.js';
+import { mcpEnvironment } from './mcpEnvironment.js';
 
 const MAX_LOG_LENGTH = 12_000;
 
@@ -209,6 +210,7 @@ export class SerenaProcessManager {
 
     const child = spawn(this.commandPath, args, {
       cwd: this.projectRoot,
+      env: mcpEnvironment(),
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -265,7 +267,7 @@ export class SerenaProcessManager {
           params: {
             protocolVersion: '2024-11-05',
             capabilities: {},
-            clientInfo: { name: 'coderecoder-desktop', version: '3.0.0' }
+            clientInfo: { name: 'coderecoder-desktop', version: '3.1.0' }
           }
         }),
         signal: AbortSignal.timeout(1_000)
@@ -295,10 +297,15 @@ export class SerenaProcessManager {
     return await new Promise<string>((resolve, reject) => {
       const child = spawn(this.commandPath as string, args, {
         cwd: this.projectRoot,
+        env: mcpEnvironment(),
         shell: false,
         windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe']
       });
+      // Newer Serena versions prompt for optional languages during project creation.
+      // Keep the detected main language; additional languages remain configurable in project.yml.
+      child.stdin?.on('error', () => undefined);
+      child.stdin?.end('n\n'.repeat(128));
       let output = '';
       let settled = false;
       const append = (chunk: unknown): void => {
