@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+launcher_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+installation_directory="$(cd -- "$(dirname -- "${launcher_path}")/.." && pwd)"
+export ELECTRON_RUN_AS_NODE=1
+exec "${installation_directory}/coderecoder" "${installation_directory}/resources/app.asar/dist/index.js" "$@"

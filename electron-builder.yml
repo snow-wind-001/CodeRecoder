@@ -1,0 +1,54 @@
+appId: com.coderecoder.desktop
+productName: CodeRecoder
+asar: true
+npmRebuild: false
+directories:
+  output: release
+extraMetadata:
+  main: dist-desktop/main/index.js
+files:
+  - dist-desktop/**
+  - dist/**
+  - desktop/assets/coderecoder.png
+  - package.json
+  - LICENSE
+extraFiles:
+  - from: desktop/linux/coderecoder-mcp
+    to: bin/coderecoder-mcp
+  - from: scripts/install-serena.sh
+    to: bin/coderecoder-install-serena
+linux:
+  target:
+    - target: deb
+      arch: [x64]
+  executableName: coderecoder
+  syncDesktopName: true
+  icon: desktop/assets/coderecoder.png
+  category: Development
+  artifactName: CodeRecoder-${version}-${arch}.${ext}
+  desktop:
+    entry:
+      Name: CodeRecoder
+      Comment: Local code backups, verified restore and MCP integration
+      StartupWMClass: coderecoder
+      Keywords: backup;snapshot;restore;MCP;code;
+deb:
+  packageName: coderecoder
+  packageCategory: devel
+  recommends: []
+  maintainer: CodeRecoder contributors <snow-wind-001@users.noreply.github.com>
+  afterInstall: build/after-install.sh
+  afterRemove: build/after-remove.sh
+  depends:
+    - libgtk-3-0
+    - libnss3
+    - libasound2 | libasound2t64
+    - libgbm1
+    - libxss1
+    - libxtst6
+    - libatspi2.0-0
+    - libsecret-1-0
+    - libnotify4
+    - libuuid1
+    - xdg-utils
+    - curl

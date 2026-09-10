@@ -2,7 +2,7 @@
 
 CodeRecoder 是一个本地优先的代码备份与可验证恢复系统，同时提供 MCP 服务和 Vue 3 + Electron 桌面控制台。它面向 Codex、Claude Code 及其他支持 MCP 的开发工具，也可以作为独立桌面小窗运行。
 
-当前版本：`3.0.0`
+当前版本：`3.1.0`
 
 > CodeRecoder 不替代 Git。Git 负责协作、审查、分支和发布历史；CodeRecoder 负责在 AI 编程和高频修改过程中自动保留可恢复副本，并在恢复前后提供完整性证据。
 
@@ -50,12 +50,28 @@ flowchart TB
 
 ## 系统要求
 
-- Node.js `22.12.0` 或更高版本
-- npm
+- 源码开发：Node.js `22.12.0` 或更高版本、npm
+- Debian 安装包：Linux amd64；桌面及 CodeRecoder MCP 使用内置运行时
 - 桌面端需要可用的图形会话
 - 完整测试使用操作系统临时目录；旧版 shell 迁移测试依赖 Bash/Linux 工具
 
 ## 安装
+
+### Debian / Ubuntu 安装包
+
+从 [GitHub Releases](https://github.com/snow-wind-001/CodeRecoder/releases) 下载 `.deb` 与 `SHA256SUMS`，在下载目录执行：
+
+```bash
+sha256sum -c SHA256SUMS
+sudo apt install ./CodeRecoder-3.1.0-amd64.deb
+coderecoder
+```
+
+安装包注册应用菜单图标，提供 `coderecoder`、`coderecoder-mcp` 和 `coderecoder-install-serena`。可以在 GNOME 应用列表中右键 CodeRecoder，选择固定到程序栏。安装后无需保留源码目录，也无需为 CodeRecoder 单独安装 Node.js。
+
+如果曾运行源码版快捷方式安装命令，用户级 `~/.local/share/applications/coderecoder.desktop` 会优先于系统安装包；请将该文件备份移走后使用系统应用列表中的图标。工程设置与备份保留在原来的用户目录。
+
+### 源码安装
 
 ```bash
 git clone https://github.com/snow-wind-001/CodeRecoder.git
@@ -102,7 +118,9 @@ npm run desktop:start
 npm run desktop:install-linux
 ```
 
-该命令以当前用户身份安装 `coderecoder.desktop`，刷新应用列表并固定到 GNOME Dock，不需要 `sudo`。启动项会自动寻找满足要求的 NVM Node.js，并从当前仓库构建、启动桌面端；因此移动或删除仓库后需要重新运行安装命令。再次点击图标会唤醒已有窗口。
+该命令先检查并补齐 Electron 运行程序、完成桌面构建，再以当前用户身份安装 `coderecoder.desktop`，刷新应用列表并固定到 GNOME Dock，最后回读固定结果，不需要 `sudo`。`npm install` 和 `npm run build` 不会自动注册快捷方式，需要单独运行上述命令。
+
+启动项会自动寻找满足要求的 Node.js（包括 NVM 安装），并从当前仓库构建、启动桌面端；因此移动或删除仓库后需要重新运行安装命令。Electron 下载会使用已有的 `HTTP_PROXY` / `HTTPS_PROXY`（也支持小写变量）；启动日志保存在 `${XDG_STATE_HOME:-~/.local/state}/coderecoder/desktop-launch.log`。再次点击图标会唤醒已有窗口。
 
 ### 桌面开发命令
 
@@ -174,7 +192,34 @@ claude mcp list
 
 ### Serena
 
+在 MCP 设置中点击“下载并安装 Serena”，或在终端执行以下一种命令：
+
+```bash
+npm run serena:install                                      # 源码版：下载固定上游版本
+bash scripts/install-serena.sh --source /path/to/serena      # 使用已下载的 Serena 源码
+coderecoder-install-serena                                  # Debian 安装版
+```
+
+安装器使用官方 uv 准备独立 Python 3.12 环境，并把 CLI 安装到 `~/.local/bin/serena`，应以当前用户运行，不使用 sudo。首次安装及语言服务准备需要联网；Serena 源码固定到官方仓库提交 `701e7c843f46c6a649203a488cece1bf19f1df90`，Python 依赖由 uv 解析。桌面安装日志位于 Electron 用户数据目录下的 `logs/serena-install.log`。
+
+C# 需要 .NET 10；可以运行 `coderecoder-install-serena --with-dotnet`，源码版使用 `npm run serena:install -- --with-dotnet`，安装器会从 Microsoft 下载 SDK 到 `~/.dotnet`。TypeScript / JavaScript / Vue 语言服务还需要系统 Node.js 和 npm；这与 CodeRecoder 安装包的内置 MCP 运行时是分别配置的。
+
+为 Codex 添加 Serena：
+
+```bash
+codex mcp add serena -- "$HOME/.local/bin/serena" start-mcp-server \
+  --context codex --project-from-cwd --enable-web-dashboard false \
+  --open-web-dashboard false --enable-gui-log-window false
+codex mcp list
+```
+
+在 `~/.codex/config.toml` 的 `[mcp_servers.serena]` 段中可设置 `startup_timeout_sec = 120`、`tool_timeout_sec = 240`，随后重启 Codex。Debian 安装版 CodeRecoder 可使用 `codex mcp add coderecoder -- /usr/bin/coderecoder-mcp`。安装与配置不覆盖其他 MCP 服务。
+
 桌面工程会话启用 Serena 后会依次执行：发现可执行文件、检查工程配置、必要时运行 `serena project create`、以固定参数绑定 `127.0.0.1` 动态端口，并发送真实 MCP `initialize` 请求。只有握手成功才显示“已连接”。
+
+后台创建配置时保留自动检测到的主要语言，不启用交互询问的可选语言。多语言工程可编辑 `.serena/project.yml` 的 `language_servers`，例如 `[csharp, cpp, python]`；CodeRecoder 的 Vue 组件分析可在 `typescript` 后增加 `vue`。请排除 `.venv`、`node_modules`、构建输出等依赖目录。已有全局配置若仍使用 `TIKTOKEN_GPT4O` 且启动卡在分词器下载，可改为当前默认的 `token_count_estimator: CHAR_COUNT`。
+
+MCP 握手表示服务已接受连接；语言功能是否可用还应通过 `get_symbols_overview` 等实际调用检查。Linux 下 Windows / Visual C++ 工程可能产生构建依赖诊断，不应据此宣称完整支持 Windows 构建。
 
 若日志包含 `Error loading configuration` 且已开启自动配置，桌面端会先把现有 `project.yml` 重命名为带时间戳的 `.bak`，再创建新配置；重建失败时会尝试恢复原文件。Serena 失败只降低辅助工具状态，不会把正常的备份保护误报为失败。
 
@@ -406,7 +451,7 @@ claude mcp list
 - **自动检查点降级**：调用 `get_backup_status`，查看 `automaticCheckpoint.lastError` 和目录权限。
 - **恢复令牌失效**：重新生成预览；工程变化、超时或令牌已使用都会使旧令牌失效。
 - **备份目录不可写**：选择具有写权限的外部 `storageRoot`，并检查磁盘空间。
-- **桌面窗口无法启动**：确认图形会话可用，并先运行 `npm run desktop:typecheck` 与 `npm run desktop:build`。
+- **桌面窗口无法启动**：运行 `npm run desktop:install-linux` 检查 Electron 运行程序并重新构建、安装快捷方式；若 Electron 下载失败，检查网络及 `HTTP_PROXY` / `HTTPS_PROXY`。从程序栏启动的错误记录在 `${XDG_STATE_HOME:-~/.local/state}/coderecoder/desktop-launch.log`。
 - **Serena 显示 `Error loading configuration`**：在工程卡片确认备份仍正常，再点击 Serena 的重新检测按钮；自动修复启用时，原配置会以 `.coderecoder-invalid-<timestamp>.bak` 保留。
 - **Cursor Serena 无法启动**：不要使用已经移除的 `serena-mcp-server` 入口；命令应为 `serena start-mcp-server --context ide --project-from-cwd`。
 - **配置建议里的 HTTP 地址变化**：这是设计行为；Electron sidecar 使用动态端口，长期连接请使用 stdio 配置。

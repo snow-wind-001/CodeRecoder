@@ -10,10 +10,13 @@ npm run desktop:typecheck     # 检查 renderer、preload 和 main
 npm run desktop:build         # 构建到 dist-desktop/
 npm run desktop:start         # 构建并启动桌面应用
 npm run desktop:install-linux # 安装并固定到 GNOME 程序栏
+npm run desktop:deb           # 生成 release/CodeRecoder-<version>-amd64.deb
 npm run test:desktop          # 桌面集成测试
 ```
 
-Linux 启动项安装在当前用户目录，不需要 `sudo`。它引用当前仓库路径，并自动选择满足 `>=22.12.0` 的 NVM Node.js；移动仓库后需重新安装启动项。
+Linux 安装命令会先检查并补齐 Electron 运行程序、完成构建，再安装当前用户的快捷方式并核对 GNOME 固定结果，不需要 `sudo`。`npm install` 和普通构建不会自动注册快捷方式。启动项引用当前仓库路径，并自动选择满足 `>=22.12.0` 的 Node.js（包括 NVM 安装）；移动仓库后需重新安装启动项。
+
+Electron 下载会使用已有的 `HTTP_PROXY` / `HTTPS_PROXY`（也支持小写变量）。从程序栏启动时，日志写入 `${XDG_STATE_HOME:-~/.local/state}/coderecoder/desktop-launch.log`；运行 `bash desktop/start-coderecoder-desktop.sh --prepare` 可在终端检查运行环境并构建，不打开窗口。
 
 ## 多工程会话
 
@@ -35,7 +38,11 @@ Linux 启动项安装在当前用户目录，不需要 `sudo`。它引用当前�
 
 ## Serena 启动与恢复
 
+缺少 CLI 时，连接工作台提供“下载并安装 Serena”，自动准备独立 Python 环境。终端可运行 `npm run serena:install` 或安装包提供的 `coderecoder-install-serena`；C# 工程在命令后增加 `--with-dotnet`（npm 命令使用 `-- --with-dotnet`）。安装操作可在退出应用时取消，失败日志保存在用户数据目录下的 `logs/serena-install.log`。
+
 启用后，桌面端会发现可执行文件、按需创建 `.serena/project.yml`、以固定参数绑定 `127.0.0.1`，并通过真实 MCP `initialize` 握手确认就绪。
+
+后台创建配置保留检测到的主要语言，可选语言需要在 `language_servers` 中配置。语言服务可能另需 Node.js/npm 或 .NET；握手成功后仍应验证所用语言的符号查询。
 
 若明确检测到 `Error loading configuration` 且自动配置已开启，原配置会先保存为 `.coderecoder-invalid-<timestamp>.bak`，再由 `serena project create` 重建；重建失败则尝试恢复原文件。Serena 降级不会改变备份健康状态。
 
@@ -52,3 +59,5 @@ Linux 启动项安装在当前用户目录，不需要 `sudo`。它引用当前�
 - MCP 与桌面同时操作同一工程时，跨进程工程锁会串行化关键写入。
 
 运行数据位于 Electron `userData` 目录；`dist-desktop/` 不应提交。主 README 参见 [`../README.md`](../README.md)。
+
+安装包制作、验证和发布步骤见 [`../docs/LINUX_RELEASE.md`](../docs/LINUX_RELEASE.md)。

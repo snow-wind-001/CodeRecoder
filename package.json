@@ -1,8 +1,9 @@
 {
   "name": "coderecoder-mcp",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Production-oriented code backup and verified restore service for MCP and Electron.",
   "main": "dist/index.js",
+  "desktopName": "coderecoder.desktop",
   "type": "module",
   "scripts": {
     "build": "tsc",
@@ -21,7 +22,10 @@
     "test:desktop": "npm run desktop:typecheck && tsx --test test/desktop-controller.test.ts",
     "test:legacy": "bash test/test_full_workflow.sh",
     "clean": "rm -rf dist/",
-    "lint": "tsc --noEmit && npm run desktop:typecheck"
+    "lint": "tsc --noEmit && npm run desktop:typecheck",
+    "serena:install": "bash scripts/install-serena.sh",
+    "desktop:deb": "npm run desktop:build && node scripts/prepare-deb-hooks.cjs && electron-builder --linux deb --x64 --publish never",
+    "desktop:verify-deb": "bash scripts/verify-deb.sh"
   },
   "keywords": [
     "mcp",
@@ -59,6 +63,7 @@
     "@types/node": "^22.20.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "electron": "^44.2.0",
+    "electron-builder": "26.15.3",
     "electron-vite": "^5.0.0",
     "tsx": "^4.6.0",
     "typescript": "^5.3.0",

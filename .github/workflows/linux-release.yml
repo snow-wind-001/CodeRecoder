@@ -1,0 +1,78 @@
+name: Linux build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check release version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+          fi
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run desktop:deb
+      - name: Install Debian package and validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ./release/*.deb desktop-file-utils xvfb xauth
+      - name: Verify package and bundled MCP
+        run: npm run desktop:verify-deb -- release/CodeRecoder-*-amd64.deb
+      - name: Start installed GUI with isolated preferences
+        shell: bash
+        run: |
+          smoke_directory=$(mktemp -d /tmp/coderecoder_gui.XXXXXX)
+          trap 'rm -rf -- "$smoke_directory"' EXIT
+          timeout 40s xvfb-run -a env CODERECODER_DESKTOP_SMOKE=1 \
+            XDG_CONFIG_HOME="$smoke_directory/config" XDG_CACHE_HOME="$smoke_directory/cache" \
+            XDG_STATE_HOME="$smoke_directory/state" /opt/CodeRecoder/coderecoder
+      - name: Checksums
+        working-directory: release
+        run: sha256sum ./*.deb > SHA256SUMS
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: coderecoder-linux-amd64
+          path: |
+            release/*.deb
+            release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: coderecoder-linux-amd64
+          path: release
+      - name: Publish tested Debian package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" release/*.deb release/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "CodeRecoder $RELEASE_TAG" \
+            --notes-file "docs/releases/$RELEASE_TAG.md"
