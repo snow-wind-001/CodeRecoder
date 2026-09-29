@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
+import { includesBackupFile, normalizeBackupFilter, type BackupFilter, type BackupFilterOptions } from './backupFilter.js';
 
 const SCHEMA_VERSION = 1;
 const LOCK_STALE_MS = 15 * 1000;
@@ -100,6 +101,7 @@ interface PendingRestore {
   mode: RestoreMode;
   projectRoot: string;
   currentTreeHash: string;
+  filterFingerprint?: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -113,6 +115,8 @@ interface RestoreRecoveryJournal {
   startedAt: number;
   state: 'applying' | 'rollback-required';
   error?: string;
+  backupFilter?: BackupFilter;
+  excludeNames?: string[];
 }
 
 interface StorageRecoveryReport {
@@ -132,7 +136,7 @@ interface StorageRecoveryReport {
   };
 }
 
-export interface BackupManagerOptions {
+export interface BackupManagerOptions extends BackupFilterOptions {
   storageRoot?: string;
   maxBackups?: number;
   excludeNames?: string[];
@@ -197,6 +201,7 @@ export class BackupManager {
   private maxBackups = 100;
   private requestedMaxBackups?: number;
   private excludedNames = new Set(DEFAULT_EXCLUDED_NAMES);
+  private backupFilter = normalizeBackupFilter();
   private initialized = false;
   private lastRecovery?: StorageRecoveryReport;
 
@@ -235,6 +240,7 @@ export class BackupManager {
     this.requestedMaxBackups = options.maxBackups;
     this.maxBackups = Math.max(2, options.maxBackups ?? 100);
     this.excludedNames = new Set([...DEFAULT_EXCLUDED_NAMES, ...(options.excludeNames ?? [])]);
+    this.backupFilter = normalizeBackupFilter(options);
 
     const projectKey = crypto.createHash('sha256').update(this.projectRootReal).digest('hex').slice(0, 16);
     if (options.storageRoot) {
@@ -309,13 +315,14 @@ export class BackupManager {
     return this.storageRoot;
   }
 
-  isPathIgnored(candidatePath: string): boolean {
+  isPathIgnored(candidatePath: string, kind?: BackupEntryKind): boolean {
     if (!this.initialized) return false;
     const absolutePath = path.resolve(candidatePath);
     const relativePath = path.relative(this.projectRoot, absolutePath);
     if (!relativePath || relativePath === '.') return false;
     if (this.isOutside(relativePath)) return true;
-    return this.shouldExclude(relativePath);
+    return this.shouldExclude(relativePath)
+      || (kind !== undefined && kind !== 'directory' && !includesBackupFile(relativePath, this.backupFilter));
   }
 
   async createBackup(options: CreateBackupOptions = {}): Promise<BackupResponse> {
@@ -535,7 +542,7 @@ export class BackupManager {
       const manifest = await this.readManifest(snapshotId);
       const currentEntries = await this.scanProject();
       const currentTreeHash = this.calculateTreeHash(currentEntries);
-      const changes = this.compareEntries(currentEntries, manifest.entries);
+      const changes = this.compareEntries(currentEntries, this.filterEntries(manifest.entries));
       const token = crypto.randomUUID();
       const now = Date.now();
       const pending: PendingRestore = {
@@ -545,6 +552,7 @@ export class BackupManager {
         mode,
         projectRoot: this.projectRootReal,
         currentTreeHash,
+        filterFingerprint: this.filterFingerprint(),
         createdAt: now,
         expiresAt: now + RESTORE_TOKEN_TTL_MS
       };
@@ -599,6 +607,9 @@ export class BackupManager {
         await this.syncDirectory(this.pendingRoot);
         throw new Error('Restore confirmation expired; create a new preview');
       }
+      if (pending.filterFingerprint !== this.filterFingerprint()) {
+        throw new Error('Backup filters changed or the preview is outdated; create a new restore preview');
+      }
 
       const currentEntries = await this.scanProject();
       if (this.calculateTreeHash(currentEntries) !== pending.currentTreeHash) {
@@ -646,14 +657,17 @@ export class BackupManager {
           preRestoreSnapshotId: preRestoreId,
           mode: pending.mode,
           startedAt: Date.now(),
-          state: 'applying'
+          state: 'applying',
+          backupFilter: this.backupFilter,
+          excludeNames: [...this.excludedNames]
         };
         await this.atomicWriteJson(this.recoveryPath, recoveryJournal);
 
         try {
           await this.applyManifest(targetManifest, pending.mode);
           const restoredEntries = await this.scanProject();
-          const verification = this.verifyRestoredState(restoredEntries, targetManifest.entries, pending.mode);
+          const targetEntries = this.filterEntries(targetManifest.entries);
+          const verification = this.verifyRestoredState(restoredEntries, targetEntries, pending.mode);
           if (!verification.success) {
             throw new Error(verification.error);
           }
@@ -668,7 +682,7 @@ export class BackupManager {
               mode: pending.mode,
               preRestoreSnapshotId: preRestoreId,
               verification: 'verified',
-              restoredTreeHash: this.calculateTreeHash(targetManifest.entries)
+              restoredTreeHash: this.calculateTreeHash(targetEntries)
             }
           };
         } catch (restoreError) {
@@ -852,6 +866,7 @@ export class BackupManager {
   }
 
   private async applyManifest(manifest: BackupManifest, mode: RestoreMode): Promise<void> {
+    manifest = { ...manifest, entries: this.filterEntries(manifest.entries) };
     const currentEntries = await this.scanProject();
     const targetMap = new Map(manifest.entries.map(entry => [entry.path, entry]));
 
@@ -945,8 +960,19 @@ export class BackupManager {
     }
 
     if (mode === 'exact') {
+      const actualParents = new Set<string>();
+      for (const entry of actualEntries) {
+        if (entry.kind === 'directory') continue;
+        let parent = path.posix.dirname(entry.path);
+        while (parent !== '.') {
+          actualParents.add(parent);
+          parent = path.posix.dirname(parent);
+        }
+      }
       for (const relativePath of actualMap.keys()) {
         if (!expectedMap.has(relativePath)) {
+          // A directory containing only excluded files must remain on disk.
+          if (actualMap.get(relativePath)?.kind === 'directory' && !actualParents.has(relativePath)) continue;
           return { success: false, error: `Unexpected entry remains after exact restore: ${relativePath}` };
         }
       }
@@ -1028,6 +1054,7 @@ export class BackupManager {
         const absolutePath = path.join(directoryPath, directoryEntry.name);
         const relativePath = this.normalizeRelative(path.relative(this.projectRoot, absolutePath));
         if (this.shouldExclude(relativePath)) continue;
+        if (!directoryEntry.isDirectory() && !includesBackupFile(relativePath, this.backupFilter)) continue;
 
         const stats = await nodeFs.lstat(absolutePath);
         const baseEntry = {
@@ -1057,8 +1084,33 @@ export class BackupManager {
     };
 
     await walk(this.projectRoot);
-    entries.sort((left, right) => left.path.localeCompare(right.path));
-    return entries;
+    // Manifests are validated with lexical string ordering in readManifest.
+    // Locale collation orders mixed case, punctuation, and Unicode differently.
+    entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+    return this.filterEntries(entries);
+  }
+
+  private filterEntries(entries: BackupEntry[]): BackupEntry[] {
+    const included = entries.filter(entry => !this.shouldExclude(entry.path)
+      && (entry.kind === 'directory' || includesBackupFile(entry.path, this.backupFilter)));
+    if (this.backupFilter.backupScope === 'all') return included;
+    const parents = new Set<string>();
+    for (const entry of included) {
+      if (entry.kind === 'directory') continue;
+      let parent = path.posix.dirname(entry.path);
+      while (parent !== '.') {
+        parents.add(parent);
+        parent = path.posix.dirname(parent);
+      }
+    }
+    return included.filter(entry => entry.kind !== 'directory' || parents.has(entry.path));
+  }
+
+  private filterFingerprint(): string {
+    return crypto.createHash('sha256').update(JSON.stringify({
+      ...this.backupFilter,
+      excludeNames: [...this.excludedNames].sort()
+    })).digest('hex');
   }
 
   private compareEntries(before: BackupEntry[], after: BackupEntry[]): BackupChangeSet {
@@ -1142,6 +1194,7 @@ export class BackupManager {
     const normalized = this.normalizeRelative(relativePath);
     const segments = normalized.split('/');
     if (segments.some(segment => this.excludedNames.has(segment))) return true;
+    if (this.backupFilter.excludePaths.some(excluded => normalized === excluded || normalized.startsWith(`${excluded}/`))) return true;
 
     const baseName = segments[segments.length - 1];
     if (baseName.startsWith('.env')) return true;
@@ -1520,7 +1573,19 @@ export class BackupManager {
       if (journal.schemaVersion !== SCHEMA_VERSION || journal.projectRoot !== this.projectRootReal) {
         throw new Error('Restore recovery journal does not belong to this project');
       }
-      await this.rollbackToSnapshot(journal.preRestoreSnapshotId);
+      // Recover with the scope that created the safety backup, even if settings changed.
+      const configuredFilter = this.backupFilter;
+      const configuredNames = this.excludedNames;
+      try {
+        if (journal.backupFilter) {
+          this.backupFilter = normalizeBackupFilter(journal.backupFilter);
+          this.excludedNames = new Set([...DEFAULT_EXCLUDED_NAMES, ...(journal.excludeNames ?? [])]);
+        }
+        await this.rollbackToSnapshot(journal.preRestoreSnapshotId);
+      } finally {
+        this.backupFilter = configuredFilter;
+        this.excludedNames = configuredNames;
+      }
       await this.removeRecoveryJournal();
       report.interruptedRestore = {
         snapshotId: journal.snapshotId,
@@ -1542,7 +1607,7 @@ export class BackupManager {
     const rollbackEntries = await this.scanProject();
     const verification = this.verifyRestoredState(
       rollbackEntries,
-      rollbackManifest.entries,
+      this.filterEntries(rollbackManifest.entries),
       'exact'
     );
     if (!verification.success) throw new Error(verification.error);

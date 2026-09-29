@@ -6,11 +6,13 @@ import {
   LoaderCircle,
   Play,
   Power,
+  SlidersHorizontal,
   ShieldOff,
   Trash2
 } from '@lucide/vue';
 import type {
   DesktopDashboard,
+  BackupFilterOptions,
   DesktopResult,
   ProjectRegistrationInput,
   RestoreOutcome,
@@ -18,6 +20,7 @@ import type {
 } from '../../shared/contracts.js';
 import ActionToast from './components/ActionToast.vue';
 import AppHeader from './components/AppHeader.vue';
+import BackupSettingsDrawer from './components/BackupSettingsDrawer.vue';
 import McpSettingsDrawer from './components/McpSettingsDrawer.vue';
 import ProjectSetup from './components/ProjectSetup.vue';
 import ProjectSwitcher from './components/ProjectSwitcher.vue';
@@ -39,6 +42,7 @@ const refreshError = ref('');
 const restoreTarget = ref<SnapshotSummary | null>(null);
 const settingsOpen = ref(false);
 const setupOpen = ref(false);
+const backupSettingsOpen = ref(false);
 const addDialog = ref<HTMLElement | null>(null);
 const toast = ref<{ message: string; tone: 'success' | 'error' | 'info' } | null>(null);
 let refreshTimer: number | undefined;
@@ -51,7 +55,7 @@ const selectedProject = computed(() => dashboard.value?.selectedProject ?? null)
 const selectedId = computed(() => dashboard.value?.selectedProjectId ?? null);
 const isMainWindow = computed(() => dashboard.value?.window.kind !== 'project');
 const busy = computed(() => booting.value || refreshing.value || actionBusy.value);
-const overlayOpen = computed(() => restoreTarget.value !== null || settingsOpen.value || setupOpen.value);
+const overlayOpen = computed(() => restoreTarget.value !== null || settingsOpen.value || setupOpen.value || backupSettingsOpen.value);
 const projectIsRunning = computed(() => {
   const state = selectedProject.value?.project.protectionState;
   return state === 'running' || state === 'degraded' || state === 'starting';
@@ -277,6 +281,10 @@ function showToast(message: string, tone: 'success' | 'error' | 'info'): void {
   toastTimer = window.setTimeout(() => { toast.value = null; }, tone === 'error' ? 7000 : 4200);
 }
 
+function backupFilterSaved(filter: BackupFilterOptions): void {
+  if (selectedProject.value) Object.assign(selectedProject.value.config, filter);
+}
+
 function handleVisibilityChange(): void {
   if (document.visibilityState === 'visible' && dashboard.value?.projects.length) void refresh(true);
 }
@@ -289,7 +297,7 @@ function handleAddDialogKeydown(event: KeyboardEvent): void {
   }
   if (event.key !== 'Tab' || !addDialog.value) return;
   const focusable = Array.from(addDialog.value.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
   ));
   if (!focusable.length) return;
   const first = focusable[0];
@@ -353,6 +361,7 @@ function handleAddDialogKeydown(event: KeyboardEvent): void {
             <span :title="selectedProject.project.root">{{ selectedProject.project.root }}</span>
           </div>
           <div class="project-actions">
+            <button type="button" :disabled="actionBusy" aria-label="设置备份范围" title="设置备份范围" data-testid="open-backup-settings" @click="backupSettingsOpen = true"><SlidersHorizontal :size="14" /></button>
             <button v-if="isMainWindow" type="button" :disabled="busy" aria-label="在独立窗口打开" title="在独立窗口打开" @click="openProjectWindow"><ExternalLink :size="14" /></button>
             <button v-if="projectIsRunning" type="button" :disabled="busy" aria-label="安全停止工程" title="创建最终检查点并停止" @click="stopProject"><Power :size="14" /></button>
             <button v-else type="button" :disabled="busy" aria-label="启动工程保护" title="启动工程保护" @click="startProject"><Play :size="14" /></button>
@@ -404,6 +413,15 @@ function handleAddDialogKeydown(event: KeyboardEvent): void {
 
     <ActionToast v-if="toast" :message="toast.message" :tone="toast.tone" @close="toast = null" />
 
+    <BackupSettingsDrawer
+      v-if="backupSettingsOpen && selectedProject"
+      :project-id="selectedProject.project.id"
+      :project-name="selectedProject.project.name"
+      :filter="selectedProject.config"
+      @close="backupSettingsOpen = false"
+      @saved="backupFilterSaved"
+      @notify="showToast"
+    />
     <RestoreDrawer
       :open="restoreTarget !== null"
       :project-id="selectedId"

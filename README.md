@@ -50,8 +50,8 @@ flowchart TB
 
 ## 系统要求
 
-- Node.js `22.12.0` 或更高版本
-- npm
+- 从源码运行需要 Node.js `22.12.0` 或更高版本及 npm
+- Debian 安装包已内置 Electron 与 MCP Node.js 运行时，不要求系统另装 Node.js
 - 桌面端需要可用的图形会话
 - 完整测试使用操作系统临时目录；旧版 shell 迁移测试依赖 Bash/Linux 工具
 
@@ -96,6 +96,25 @@ npm run desktop:start
 
 桌面端不提供永久删除按钮；删除备份仍需通过 MCP 工具进行双 ID 确认。更多说明见 [`desktop/README.md`](./desktop/README.md)。
 
+### Debian / Ubuntu 安装包
+
+在 amd64 Debian/Ubuntu 主机上构建并验证安装包：
+
+```bash
+npm install
+npm run desktop:package:deb
+```
+
+产物位于 `release/coderecoder_3.0.0_amd64.deb`，并附带同名 `.sha256` 校验文件。请使用 `apt` 安装，以便自动解析 GTK、NSS、音频和桌面集成库：
+
+```bash
+sudo apt install ./release/coderecoder_3.0.0_amd64.deb
+```
+
+安装后可从应用菜单启动 `CodeRecoder`。程序文件安装到 `/opt/CodeRecoder`；MCP 配置工作台会使用安装包自带的 `coderecoder-mcp` 运行时，因此客户端连接不依赖系统 Node.js。Serena、VS Code、Cursor、Claude Code 与 Codex 都是可选集成，不会作为 Debian 强制依赖安装。
+
+`desktop:package:deb` 会在打包后自动解包校验 control 依赖、文件权限、桌面入口和动态库，并通过内置运行时完成一次 MCP initialize 与工具列表握手。也可以对已有产物单独运行 `npm run desktop:verify:deb -- <deb-path>`。
+
 ### 安装到 Ubuntu/GNOME 程序栏
 
 ```bash
@@ -111,6 +130,7 @@ npm run desktop:dev       # 构建内核并启动 Electron/Vite 热更新
 npm run desktop:renderer  # 只启动浏览器渲染层，供界面开发使用
 npm run desktop:typecheck # 检查 renderer、preload 和 Electron 主进程
 npm run desktop:build     # 生产构建到 dist-desktop/
+npm run desktop:package:deb # 构建并验证 amd64 Debian 安装包
 npm run test:desktop      # 桌面控制器集成测试
 ```
 
@@ -344,6 +364,26 @@ claude mcp list
 - 位于受保护工程内部的备份存储目录本身；
 - 用户通过 `excludeNames` 增加的目录段或文件名。
 
+### 按工程选择备份范围
+
+默认仍为 `backupScope: "all"`，保留以上排除规则。添加工程时可选择“仅代码与文档”；已注册工程可点击工程行的“设置备份范围”。保存的新范围在下次启动该工程保护时生效，当前会话与现有快照保持原范围。
+
+```json
+{
+  "backupScope": "code-and-docs",
+  "excludePaths": ["output/", "results_swarm_rescue/", "UsedCode/Models/"],
+  "includeExtensions": ["svg", "png"]
+}
+```
+
+这三个可选字段也可传给 MCP `activate_project`：
+
+- `backupScope`：`all` 或 `code-and-docs`。后者按已知文件名和扩展名保留源码、脚本、配置、锁文件、Markdown、TXT、LaTeX、PDF、Office 文档等；常见模型权重、CSV/二进制数据、压缩包、图片和音视频默认跳过。这是文件名规则，不分析内容，也不会自动读取 `.gitignore`。
+- `excludePaths`：最多 100 个工程根目录下的相对文件或目录路径。目录及其后代全部排除，不接受绝对路径、`..` 或通配符。例如 `output/` 不会排除 `src/output/`，后者需要单独填写；按任意层级名称排除仍可使用 MCP 的 `excludeNames`。
+- `includeExtensions`：为 `code-and-docs` 补充最多 100 个扩展名，可带前导点、不区分大小写。例如 `svg`、`png` 保留文档插图，`csv` 保留需要版本化的数据；显式排除规则优先。
+
+生成目录中的 JSON、TXT 和代码副本仍符合文件类型规则，应通过 `excludePaths` 排除整个目录。备份扫描、状态对账和自动监听使用相同规则。恢复旧快照也会保留当前排除的文件；过滤配置改变后必须重新生成恢复预览。过滤不会清理旧快照，因此已有排序不兼容的旧清单仍需另行处理。
+
 符号链接按链接本身保存，不跟随到工程外。恢复时所有清单路径都会经过安全连接检查，拒绝绝对路径和目录穿越。
 
 ## 可靠性设计
@@ -382,7 +422,8 @@ claude mcp list
 | `npm run test:quick` | 运行备份内核与自动检查点测试 |
 | `npm run test:mcp` | 运行真实 MCP 初始化、列举和调用生命周期测试 |
 | `npm run test:desktop` | 运行多工程隔离、偏好迁移、Serena 修复和 MCP 配置测试 |
-| `npm run desktop:install-linux` | 安装用户级启动项并固定到 GNOME Dock |
+| `npm run desktop:install-linux` | 为源码检出安装用户级启动项并固定到 GNOME Dock |
+| `npm run desktop:package:deb` | 构建并验证自包含 MCP 运行时的 amd64 Debian 包 |
 | `npm test` | 运行当前完整自动化测试套件 |
 
 当前测试覆盖二进制内容、空目录、权限、符号链接、排除规则、增删改名、精确恢复、令牌拒绝、损坏检测、保留策略、并发管理器、损坏索引重建、中断删除/恢复、监听防抖、stdio 协议纯净性、多工程停止隔离、工程窗口权限、路径重叠拒绝、偏好迁移、Serena 配置修复与 MCP initialize 握手。
@@ -393,7 +434,7 @@ claude mcp list
 
 - CodeRecoder 不是文件系统冻结点，也不保证跨多个同时写入文件的应用级事务快照。
 - 自动检查点只在对应 MCP 或桌面进程存活且工程已激活时运行。
-- 当前仓库提供用户级 Linux 启动项，但尚未配置可分发安装包、代码签名、自动更新、托盘常驻或云同步。
+- 当前提供 amd64 Debian/Ubuntu 安装包；尚未配置包签名仓库、自动更新、托盘常驻或云同步。
 - 默认排除的环境文件和密钥不会进入快照，因此需要独立的安全配置备份方案。
 - 硬链接去重降低本地占用，但不能替代离线副本、对象存储版本控制或异地备份。
 - 每个 stdio MCP 进程同时只激活一个工程；桌面端单实例可保护多个工程。
@@ -427,6 +468,7 @@ desktop/
 │   ├── serenaManager.ts        # Serena 配置、sidecar、握手与自动修复
 │   └── mcpIntegrationService.ts # 客户端预检及配置建议
 ├── renderer/                   # Vue 3 界面、组件与样式
+├── packaging/                  # Debian 内置 MCP 启动器与安装包验证器
 ├── install-linux-launcher.sh   # 用户级应用菜单与 GNOME Dock 安装器
 ├── start-coderecoder-desktop.sh # 图形会话启动包装器
 └── shared/contracts.ts         # 桌面 IPC 契约

@@ -2,6 +2,7 @@
   "name": "coderecoder-mcp",
   "version": "3.0.0",
   "description": "Production-oriented code backup and verified restore service for MCP and Electron.",
+  "desktopName": "coderecoder.desktop",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -11,8 +12,11 @@
     "desktop:dev": "npm run build && electron-vite dev --config desktop/electron.vite.config.ts",
     "desktop:renderer": "vite --config desktop/vite.config.ts --host 127.0.0.1",
     "desktop:typecheck": "vue-tsc --noEmit -p desktop/renderer/tsconfig.json && tsc --noEmit -p desktop/tsconfig.electron.json",
-    "desktop:build": "npm run build && npm run desktop:typecheck && electron-vite build --config desktop/electron.vite.config.ts",
+    "desktop:bundle:mcp": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=build/mcp/index.mjs",
+    "desktop:build": "npm run build && npm run desktop:typecheck && electron-vite build --config desktop/electron.vite.config.ts && npm run desktop:bundle:mcp",
     "desktop:start": "npm run desktop:build && electron dist-desktop/main/index.js",
+    "desktop:package:deb": "npm run desktop:build && electron-builder --config electron-builder.yml --linux deb --x64 --publish never && npm run desktop:verify:deb",
+    "desktop:verify:deb": "node desktop/packaging/verify-deb.mjs",
     "desktop:install-linux": "bash desktop/install-linux-launcher.sh --pin",
     "prepare": "npm run build",
     "test": "npm run build && npm run desktop:typecheck && node --test test/*.test.js && tsx --test test/desktop-controller.test.ts",
@@ -38,7 +42,10 @@
     "integrity",
     "project-backup"
   ],
-  "author": "spikebai",
+  "author": {
+    "name": "spikebai",
+    "email": "spikebai@users.noreply.github.com"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=22.12.0"
@@ -59,7 +66,9 @@
     "@types/node": "^22.20.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "esbuild": "^0.25.9",
     "tsx": "^4.6.0",
     "typescript": "^5.3.0",
     "vite": "^7.3.6",

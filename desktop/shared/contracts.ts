@@ -1,7 +1,11 @@
+import type { BackupFilterOptions } from '../../src/backupFilter.js';
+export type { BackupFilter, BackupFilterOptions, BackupScope } from '../../src/backupFilter.js';
+
 export const DESKTOP_IPC = {
   bootstrap: 'coderecoder:bootstrap',
   chooseDirectory: 'coderecoder:choose-directory',
   registerProject: 'coderecoder:register-project',
+  updateBackupFilter: 'coderecoder:update-backup-filter',
   selectProject: 'coderecoder:select-project',
   startProject: 'coderecoder:start-project',
   stopProject: 'coderecoder:stop-project',
@@ -36,7 +40,7 @@ export interface DesktopResult<T = unknown> {
   error?: string;
 }
 
-export interface ProjectRegistrationInput {
+export interface ProjectRegistrationInput extends BackupFilterOptions {
   projectPath: string;
   storageRoot?: string;
   autoCheckpoint: boolean;
@@ -258,7 +262,7 @@ export interface McpRecommendation {
 
 export interface DesktopStateEvent {
   projectId: ProjectId | null;
-  reason: 'project-registered' | 'project-started' | 'project-stopped' | 'project-removed' | 'checkpoint' | 'serena' | 'restore' | 'selection';
+  reason: 'project-registered' | 'project-started' | 'project-stopped' | 'project-removed' | 'checkpoint' | 'serena' | 'restore' | 'selection' | 'configuration';
   occurredAt: number;
 }
 
@@ -266,6 +270,7 @@ export interface CodeRecoderDesktopApi {
   bootstrap(): Promise<DesktopResult<DesktopDashboard>>;
   chooseDirectory(kind: DirectoryKind): Promise<DesktopResult<{ path: string | null }>>;
   registerProject(input: ProjectRegistrationInput): Promise<DesktopResult<{ projectId: ProjectId }>>;
+  updateBackupFilter(input: { projectId: ProjectId; filter: BackupFilterOptions }): Promise<DesktopResult>;
   selectProject(projectId: ProjectId): Promise<DesktopResult<DesktopDashboard>>;
   startProject(projectId: ProjectId): Promise<DesktopResult>;
   stopProject(input: { projectId: ProjectId; createFinalCheckpoint: boolean }): Promise<DesktopResult>;

@@ -84,3 +84,40 @@ test('MCP lifecycle advertises and executes the production backup surface', asyn
   assert.equal(deactivation.isError, false);
   assert.equal(deactivation.structuredContent?.data?.state, 'inactive');
 });
+
+
+test('MCP activation accepts backup scope and path filters and rejects unsafe paths', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder_mcp_filter_'));
+  const projectPath = path.join(root, 'project');
+  await fs.mkdir(path.join(projectPath, 'output'), { recursive: true });
+  await fs.writeFile(path.join(projectPath, 'main.ts'), 'source');
+  await fs.writeFile(path.join(projectPath, 'README.md'), 'docs');
+  await fs.writeFile(path.join(projectPath, 'picture.svg'), '<svg/>');
+  await fs.writeFile(path.join(projectPath, 'model.pt'), 'weights');
+  await fs.writeFile(path.join(projectPath, 'output', 'generated.py'), 'generated source');
+  const server = new CodeRecoderServer();
+  const client = new Client({ name: 'backup-filter-test', version: '1' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  t.after(async () => {
+    await client.close(); await server.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const listed = await client.listTools();
+  const schema = listed.tools.find(tool => tool.name === 'activate_project').inputSchema;
+  for (const field of ['backupScope', 'excludePaths', 'includeExtensions']) assert.ok(schema.properties[field]);
+  const activation = await client.callTool({ name: 'activate_project', arguments: {
+    projectPath, storageRoot: path.join(root, 'storage'), autoCheckpoint: false,
+    backupScope: 'code-and-docs', excludePaths: ['output/'], includeExtensions: ['svg']
+  } });
+  assert.equal(activation.isError, false);
+  const status = await client.callTool({ name: 'get_backup_status', arguments: {} });
+  assert.equal(status.structuredContent.data.latestSnapshot.totalFiles, 3);
+  const invalid = await client.callTool({ name: 'activate_project', arguments: {
+    projectPath, storageRoot: path.join(root, 'storage'), excludePaths: ['../outside']
+  } });
+  assert.equal(invalid.isError, true);
+  assert.equal((await client.callTool({ name: 'get_backup_status', arguments: {} })).isError, false);
+  await client.callTool({ name: 'deactivate_project', arguments: { createFinalCheckpoint: false } });
+});

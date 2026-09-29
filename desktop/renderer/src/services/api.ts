@@ -1,3 +1,4 @@
+import { normalizeBackupFilter } from '../../../../src/backupFilter.js';
 import type {
   CodeRecoderDesktopApi,
   DesktopDashboard,
@@ -194,6 +195,12 @@ function createDemoApi(): CodeRecoderDesktopApi {
       selectedId = id;
       return ok('工程已选择', structuredClone(dashboard()));
     },
+    updateBackupFilter: async ({ projectId, filter }) => {
+      const config = configs.get(projectId);
+      if (!config) return { success: false, message: '工程不存在' };
+      Object.assign(config, normalizeBackupFilter(filter));
+      return ok('备份范围已保存，将在下次启动工程保护时生效');
+    },
     startProject: async id => {
       running.add(id);
       if (configs.get(id)?.serenaEnabled) serenaReady.add(id);
@@ -316,6 +323,7 @@ function unavailableApi(): CodeRecoderDesktopApi {
     bootstrap: async () => await unavailable<DesktopDashboard>(),
     chooseDirectory: async () => await unavailable<{ path: string | null }>(),
     registerProject: async () => await unavailable<{ projectId: string }>(),
+    updateBackupFilter: async () => await unavailable(),
     selectProject: async () => await unavailable<DesktopDashboard>(),
     startProject: async () => await unavailable(),
     stopProject: async () => await unavailable(),

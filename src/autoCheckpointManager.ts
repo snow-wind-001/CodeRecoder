@@ -83,11 +83,15 @@ export class AutoCheckpointManager {
         stabilityThreshold: Math.min(this.debounceMs, 1000),
         pollInterval: 100
       },
-      ignored: candidatePath => this.backupManager.isPathIgnored(path.resolve(candidatePath))
+      ignored: (candidatePath, stats) => this.backupManager.isPathIgnored(
+        path.resolve(candidatePath), stats ? (stats.isDirectory() ? 'directory' : 'file') : undefined
+      )
     });
     this.watcher = watcher;
 
-    watcher.on('all', (_eventName, changedPath) => {
+    watcher.on('all', (eventName, changedPath) => {
+      if (this.backupManager.isPathIgnored(path.resolve(changedPath),
+        eventName === 'addDir' || eventName === 'unlinkDir' ? 'directory' : 'file')) return;
       this.handleChange(path.resolve(changedPath));
     });
     watcher.on('error', error => {

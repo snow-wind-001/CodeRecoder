@@ -9,11 +9,22 @@ npm run desktop:dev           # Electron + Vite 热更新
 npm run desktop:typecheck     # 检查 renderer、preload 和 main
 npm run desktop:build         # 构建到 dist-desktop/
 npm run desktop:start         # 构建并启动桌面应用
+npm run desktop:package:deb   # 构建并验证 amd64 Debian 安装包
 npm run desktop:install-linux # 安装并固定到 GNOME 程序栏
 npm run test:desktop          # 桌面集成测试
 ```
 
 Linux 启动项安装在当前用户目录，不需要 `sudo`。它引用当前仓库路径，并自动选择满足 `>=22.12.0` 的 NVM Node.js；移动仓库后需重新安装启动项。
+
+## Debian 安装包
+
+`npm run desktop:package:deb` 生成 `release/coderecoder_3.0.0_amd64.deb` 及 `.sha256` 校验文件，并自动检查 Debian control 依赖、桌面入口、文件权限、动态库解析及 MCP stdio 握手。安装时使用 `apt`，不要单独使用 `dpkg -i`，这样缺失的 GTK、NSS、音频及桌面运行库会被自动安装：
+
+```bash
+sudo apt install ./release/coderecoder_3.0.0_amd64.deb
+```
+
+安装包包含 Electron、生产 Node 模块、编译后的桌面界面和独立 `coderecoder-mcp` 启动器。客户端配置不依赖系统 Node.js；Serena 与四类编辑器客户端仍是可选集成。程序安装到 `/opt/CodeRecoder`，用户数据继续存放在 Electron `userData` 目录，升级软件不会覆盖工程注册表或备份数据。
 
 ## 多工程会话
 
@@ -26,6 +37,16 @@ Linux 启动项安装在当前用户目录，不需要 `sudo`。它引用当前�
 主窗口汇总全部工程。需要并排查看时，可为工程创建一个独立窗口；重复打开会聚焦现有窗口，关闭该窗口不会停止保护。停止或退出时会先尝试创建最终检查点。重复、父子嵌套以及与备份目录重叠的工程会被拒绝。
 
 偏好以 schema v2、`0600` 权限原子保存。旧单工程偏好会迁移，但默认不自动启动。
+
+## 备份范围
+
+添加工程时，或点击现有工程行的“设置备份范围”，可以选择：
+
+- **全部文件**：默认值，继续应用原有依赖、缓存、日志和敏感配置排除规则。
+- **仅代码与文档**：按文件名与扩展名保留源码、配置、锁文件和文档；模型权重、常见数据文件、压缩包和媒体文件默认跳过。可填写 `svg, png` 等额外扩展名来保留文档插图或特殊格式。
+- **排除文件或目录**：每行一个相对工程根目录的路径，例如 `output/`、`results_swarm_rescue/`、`UsedCode/Models/`。目录内的 JSON、TXT 和源码也会排除。不支持通配符，且不会自动读取 `.gitignore`。
+
+已注册工程保存后，在下次启动该工程保护时生效；当前会话继续使用原规则。schema v2 新增可选字段 `backupScope`、`excludePaths`、`includeExtensions`，没有这些字段的旧配置继续使用“全部文件”。现有快照保留；恢复旧快照不会覆盖当前已排除的文件。MCP `activate_project` 支持相同三个字段。
 
 ## MCP 配置工作台
 

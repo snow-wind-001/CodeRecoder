@@ -7,6 +7,8 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import * as z from 'zod/v4';
+import type { BackupFilterOptions } from './backupFilter.js';
+import { backupFilterShape } from './backupFilterSchema.js';
 import { AutoCheckpointManager } from './autoCheckpointManager.js';
 import {
   BackupManager,
@@ -93,7 +95,8 @@ export class CodeRecoderServer {
           autoCheckpoint: z.boolean().optional().describe('Defaults to true'),
           debounceMs: z.number().int().min(100).max(60_000).optional(),
           reconciliationIntervalMs: z.number().int().min(1_000).max(86_400_000).optional(),
-          excludeNames: z.array(z.string().min(1).max(255).regex(/^[^/\\]+$/)).max(100).optional()
+          excludeNames: z.array(z.string().min(1).max(255).regex(/^[^/\\]+$/)).max(100).optional(),
+          ...backupFilterShape
         },
         outputSchema: responseSchema,
         annotations: {
@@ -299,7 +302,7 @@ export class CodeRecoderServer {
     );
   }
 
-  private async activateProject(args: {
+  private async activateProject(args: BackupFilterOptions & {
     projectPath: string;
     projectName?: string;
     storageRoot?: string;
@@ -312,7 +315,7 @@ export class CodeRecoderServer {
     return await this.runLifecycleOperation(async () => await this.performActivateProject(args));
   }
 
-  private async performActivateProject(args: {
+  private async performActivateProject(args: BackupFilterOptions & {
     projectPath: string;
     projectName?: string;
     storageRoot?: string;
@@ -329,7 +332,10 @@ export class CodeRecoderServer {
       await manager.initialize(args.projectPath, {
         storageRoot: args.storageRoot,
         maxBackups: args.maxBackups,
-        excludeNames: args.excludeNames
+        excludeNames: args.excludeNames,
+        backupScope: args.backupScope,
+        excludePaths: args.excludePaths,
+        includeExtensions: args.includeExtensions
       });
 
       if (args.autoCheckpoint ?? true) {

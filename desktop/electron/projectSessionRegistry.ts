@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { promises as nodeFs } from 'node:fs';
 import path from 'node:path';
 import * as z from 'zod/v4';
+import { backupFilterShape, backupFilterSchema } from '../../src/backupFilterSchema.js';
 import type {
   DesktopDashboard,
   DesktopResult,
@@ -23,6 +24,7 @@ import {
 import { ProjectSession } from './projectSession.js';
 
 const registrationSchema = z.object({
+  ...backupFilterShape,
   projectPath: z.string().trim().min(1).max(4096),
   storageRoot: z.string().trim().min(1).max(4096).optional(),
   autoCheckpoint: z.boolean(),
@@ -145,6 +147,28 @@ export class ProjectSessionRegistry {
         return await this.dashboard({ kind: 'main', projectId: null }, projectId, true);
       } catch (error) {
         return this.failure('选择工程失败', error);
+      }
+    });
+  }
+
+  async updateBackupFilter(rawProjectId: unknown, rawFilter: unknown): Promise<DesktopResult> {
+    return await this.serializeMutation(async () => {
+      try {
+        const projectId = this.parseProjectId(rawProjectId);
+        const session = this.requireSession(projectId);
+        const filter = backupFilterSchema.parse(rawFilter);
+        const previous = session.getRegistration();
+        session.setBackupFilter(filter);
+        try {
+          await this.savePreferences();
+        } catch (error) {
+          session.setBackupFilter(previous);
+          throw error;
+        }
+        this.emit(projectId, 'configuration');
+        return { success: true, message: '备份范围已保存，将在下次启动工程保护时生效' };
+      } catch (error) {
+        return this.failure('保存备份范围失败', error);
       }
     });
   }

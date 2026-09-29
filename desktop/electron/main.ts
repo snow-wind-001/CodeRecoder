@@ -33,6 +33,12 @@ const repositoryRoot = path.resolve(currentDirectory, '../..');
 const rendererEntry = path.resolve(currentDirectory, '../renderer/index.html');
 const preloadEntry = path.resolve(currentDirectory, '../preload/index.cjs');
 const desktopIcon = path.resolve(currentDirectory, '../../desktop/assets/coderecoder.png');
+const bundledMcpLauncher = app.isPackaged
+  ? path.join(process.resourcesPath, 'bin', 'coderecoder-mcp')
+  : null;
+const bundledMcpEntry = app.isPackaged
+  ? path.join(process.resourcesPath, 'mcp', 'index.mjs')
+  : null;
 const packagedRendererUrl = pathToFileURL(rendererEntry);
 const developmentUrl = resolveDevelopmentUrl(process.env.ELECTRON_RENDERER_URL);
 
@@ -271,6 +277,11 @@ function registerIpcHandlers(activeRegistry: ProjectSessionRegistry, integration
     assertMainWindow(trustedScope(event));
     return await activeRegistry.registerProject(input);
   });
+  handle(DESKTOP_IPC.updateBackupFilter, async (event, rawInput: unknown) => {
+    const scope = trustedScope(event);
+    const input = requireObject(rawInput, 'backup filter input');
+    return await activeRegistry.updateBackupFilter(assertProjectAccess(scope, input.projectId), input.filter);
+  });
   handle(DESKTOP_IPC.selectProject, async (event, projectId: unknown) => {
     assertMainWindow(trustedScope(event));
     return await activeRegistry.selectProject(projectId);
@@ -388,7 +399,11 @@ function registerIpcHandlers(activeRegistry: ProjectSessionRegistry, integration
 
 async function startDesktop(): Promise<void> {
   const userDataRoot = app.getPath('userData');
-  integrationService = new McpIntegrationService(repositoryRoot);
+  integrationService = new McpIntegrationService(repositoryRoot, {
+    bundledMcpLauncher,
+    bundledNodeVersion: process.versions.node,
+    serverEntry: bundledMcpEntry
+  });
   registry = new ProjectSessionRegistry({
     appVersion: app.getVersion(),
     defaultStorageRoot: path.join(userDataRoot, 'backup-storage'),

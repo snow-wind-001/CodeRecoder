@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import { normalizeBackupFilter } from '../../src/backupFilter.js';
 import {
   DESKTOP_IPC,
   type CodeRecoderDesktopApi,
@@ -7,6 +8,7 @@ import {
   type McpClientTarget,
   type McpServiceTarget,
   type ProjectRegistrationInput,
+  type BackupFilterOptions,
   type RestoreMode
 } from '../shared/contracts.js';
 
@@ -19,7 +21,8 @@ const STATE_REASONS = new Set<DesktopStateEvent['reason']>([
   'checkpoint',
   'serena',
   'restore',
-  'selection'
+  'selection',
+  'configuration'
 ]);
 
 function requireString(value: unknown, label: string, maxLength = 4096): string {
@@ -66,7 +69,8 @@ function sanitizeRegistration(input: ProjectRegistrationInput): ProjectRegistrat
     maxBackups: input.maxBackups,
     startOnLaunch: input.startOnLaunch,
     serenaEnabled: input.serenaEnabled,
-    serenaAutoConfigure: input.serenaAutoConfigure
+    serenaAutoConfigure: input.serenaAutoConfigure,
+    ...normalizeBackupFilter(input)
   };
 }
 
@@ -93,6 +97,15 @@ const api: CodeRecoderDesktopApi = Object.freeze({
     DESKTOP_IPC.registerProject,
     sanitizeRegistration(input)
   ),
+  updateBackupFilter: async (input: { projectId: string; filter: BackupFilterOptions }) => {
+    if (!input || typeof input !== 'object' || !input.filter || typeof input.filter !== 'object') {
+      throw new TypeError('backup filter input is invalid');
+    }
+    return await ipcRenderer.invoke(DESKTOP_IPC.updateBackupFilter, {
+      projectId: requireUuid(input.projectId, 'projectId'),
+      filter: normalizeBackupFilter(input.filter)
+    });
+  },
   selectProject: async (projectId: string) => await ipcRenderer.invoke(
     DESKTOP_IPC.selectProject,
     requireUuid(projectId, 'projectId')

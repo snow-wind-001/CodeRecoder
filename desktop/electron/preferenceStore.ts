@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { promises as nodeFs } from 'node:fs';
 import path from 'node:path';
 import * as z from 'zod/v4';
+import { backupFilterShape } from '../../src/backupFilterSchema.js';
 import type { ProjectId, ProjectRegistrationInput } from '../shared/contracts.js';
 
 const projectInputShape = {
+  ...backupFilterShape,
   projectPath: z.string().trim().min(1).max(4096),
   storageRoot: z.string().trim().min(1).max(4096).optional(),
   autoCheckpoint: z.boolean(),

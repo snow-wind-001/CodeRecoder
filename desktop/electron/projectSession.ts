@@ -2,6 +2,7 @@ import path from 'node:path';
 import * as z from 'zod/v4';
 import { AutoCheckpointManager } from '../../src/autoCheckpointManager.js';
 import { BackupManager, type BackupResponse } from '../../src/backupManager.js';
+import { normalizeBackupFilter, type BackupFilterOptions } from '../../src/backupFilter.js';
 import type {
   AutomaticCheckpointStatus,
   BackupStatusView,
@@ -76,7 +77,7 @@ export class ProjectSession {
   constructor(options: ProjectSessionOptions) {
     this.id = options.id;
     this.registeredAt = options.registeredAt;
-    this.config = { ...options.config };
+    this.config = { ...options.config, ...normalizeBackupFilter(options.config) };
     this.root = path.resolve(options.config.projectPath);
     this.name = path.basename(this.root);
     this.scheduler = options.scheduler;
@@ -104,7 +105,8 @@ export class ProjectSession {
         await this.scheduler.schedule(async () => {
           await manager.initialize(this.root, {
             storageRoot: this.config.storageRoot,
-            maxBackups: this.config.maxBackups
+            maxBackups: this.config.maxBackups,
+            ...normalizeBackupFilter(this.config)
           });
           const baseline = await manager.createBackup({
             name: `Desktop activation ${new Date().toISOString()}`,
@@ -333,7 +335,12 @@ export class ProjectSession {
   }
 
   getRegistration(): ProjectRegistrationInput {
-    return { ...this.config };
+    return { ...this.config, ...normalizeBackupFilter(this.config) };
+  }
+
+  setBackupFilter(filter: BackupFilterOptions): void {
+    // The running manager keeps its current scope until the next activation.
+    Object.assign(this.config, normalizeBackupFilter(filter));
   }
 
   setStartOnLaunch(value: boolean): void {

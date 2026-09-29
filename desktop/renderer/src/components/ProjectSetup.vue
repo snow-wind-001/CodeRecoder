@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { FolderOpen, HardDrive, LoaderCircle, ShieldCheck, Sparkles, X } from '@lucide/vue';
-import type { DirectoryKind, ProjectRegistrationInput } from '../../../shared/contracts.js';
+import type { BackupFilterOptions, DirectoryKind, ProjectRegistrationInput } from '../../../shared/contracts.js';
 import { getDesktopApi } from '../services/api.js';
+import BackupFilterFields from './BackupFilterFields.vue';
+import { normalizeBackupFilter } from '../../../../src/backupFilter.js';
 
 const props = defineProps<{
   defaultStorageRoot: string;
@@ -23,10 +25,13 @@ const maxBackups = ref(100);
 const startOnLaunch = ref(true);
 const serenaEnabled = ref(true);
 const serenaAutoConfigure = ref(true);
+const backupFilter = ref<BackupFilterOptions>(normalizeBackupFilter());
+const filterValid = ref(true);
 
 const canRegister = computed(() => (
   projectPath.value.length > 0
   && storageRoot.value.length > 0
+  && filterValid.value
   && !props.busy
 ));
 
@@ -55,7 +60,8 @@ function register(): void {
     maxBackups: maxBackups.value,
     startOnLaunch: startOnLaunch.value,
     serenaEnabled: serenaEnabled.value,
-    serenaAutoConfigure: serenaEnabled.value && serenaAutoConfigure.value
+    serenaAutoConfigure: serenaEnabled.value && serenaAutoConfigure.value,
+    ...normalizeBackupFilter(backupFilter.value)
   });
 }
 </script>
@@ -112,6 +118,10 @@ function register(): void {
           <option :value="250">250 个</option>
         </select>
       </label>
+    </section>
+
+    <section class="setup-form">
+      <BackupFilterFields v-model="backupFilter" v-model:valid="filterValid" :disabled="busy" />
     </section>
 
     <section class="setup-form serena-setup" aria-labelledby="serena-setup-heading">

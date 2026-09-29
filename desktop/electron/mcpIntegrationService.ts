@@ -25,6 +25,12 @@ interface ToolDescriptor {
   versionArgs: string[];
 }
 
+interface McpIntegrationServiceOptions {
+  bundledMcpLauncher?: string | null;
+  bundledNodeVersion?: string | null;
+  serverEntry?: string | null;
+}
+
 const CLIENT_TOOLS: ToolDescriptor[] = [
   { id: 'vscode', label: 'Visual Studio Code', executable: 'code', versionArgs: ['--version'] },
   { id: 'cursor', label: 'Cursor', executable: 'cursor', versionArgs: ['--version'] },
@@ -35,19 +41,32 @@ const CLIENT_TOOLS: ToolDescriptor[] = [
 export class McpIntegrationService {
   private readonly repositoryRoot: string;
   private readonly serverEntry: string;
+  private readonly bundledMcpLauncher: string | null;
+  private readonly bundledNodeVersion: string | null;
 
-  constructor(repositoryRoot: string) {
+  constructor(repositoryRoot: string, options: McpIntegrationServiceOptions = {}) {
     this.repositoryRoot = path.resolve(repositoryRoot);
-    this.serverEntry = path.join(this.repositoryRoot, 'dist', 'index.js');
+    this.serverEntry = options.serverEntry
+      ? path.resolve(options.serverEntry)
+      : path.join(this.repositoryRoot, 'dist', 'index.js');
+    this.bundledMcpLauncher = options.bundledMcpLauncher
+      ? path.resolve(options.bundledMcpLauncher)
+      : null;
+    this.bundledNodeVersion = options.bundledNodeVersion ?? null;
   }
 
   async inspect(project: McpProjectContext | null): Promise<McpEnvironmentReport> {
-    const nodePath = await this.findExecutable('node');
-    const nodeVersionOutput = nodePath ? await this.readVersion(nodePath, ['--version']) : null;
+    const bundledLauncher = await this.resolveBundledMcpLauncher();
+    const nodePath = bundledLauncher ?? await this.findExecutable('node');
+    const nodeVersionOutput = bundledLauncher
+      ? this.bundledNodeVersion
+      : nodePath ? await this.readVersion(nodePath, ['--version']) : null;
     const nodeVersion = nodeVersionOutput?.replace(/^v/, '') ?? null;
-    const nodeReady = nodePath !== null
+    const nodeReady = bundledLauncher !== null || (
+      nodePath !== null
       && nodeVersion !== null
-      && this.compareVersions(nodeVersion, '22.12.0') >= 0;
+      && this.compareVersions(nodeVersion, '22.12.0') >= 0
+    );
     const serverReady = await this.isFile(this.serverEntry);
     const serenaPath = project?.serena.cliPath ?? await this.findExecutable('serena');
     const serenaVersion = serenaPath ? await this.readVersion(serenaPath, ['--version']) : null;
@@ -57,13 +76,15 @@ export class McpIntegrationService {
     const items: EnvironmentCheckItem[] = [
       {
         id: 'node',
-        label: 'Node.js',
+        label: bundledLauncher ? '内置 MCP 运行时' : 'Node.js',
         status: nodeReady ? 'available' : 'warning',
         required: true,
         path: nodePath,
         version: nodeVersion,
-        detail: nodeReady
-          ? '满足 Node.js 22.12+ 要求'
+        detail: bundledLauncher
+          ? '安装包已内置，无需系统 Node.js'
+          : nodeReady
+            ? '满足 Node.js 22.12+ 要求'
           : nodePath ? '版本低于 22.12.0，可能无法运行当前构建' : 'PATH 中缺少独立 node 可执行文件'
       },
       {
@@ -129,11 +150,14 @@ export class McpIntegrationService {
     if (service === 'serena' && !project) {
       throw new Error('生成 Serena 配置前必须选择一个工程');
     }
+    const bundledLauncher = service === 'coderecorder'
+      ? await this.resolveBundledMcpLauncher()
+      : null;
     const command = service === 'coderecorder'
-      ? await this.findExecutable('node') ?? 'node'
+      ? bundledLauncher ?? await this.findExecutable('node') ?? 'node'
       : project?.serena.cliPath ?? await this.findExecutable('serena') ?? 'serena';
     const args = service === 'coderecorder'
-      ? [this.serverEntry]
+      ? bundledLauncher ? [] : [this.serverEntry]
       : [
           'start-mcp-server',
           '--context',
@@ -150,10 +174,15 @@ export class McpIntegrationService {
     const serverName = service;
     const endpoint = service === 'serena' ? project?.serena.endpoint ?? null : null;
     const notes = service === 'coderecorder'
-      ? [
-          '连接后由客户端调用 activate_project 选择工程；恢复与删除工具不要设置为无条件自动批准。',
-          '修改 TypeScript 源码后先运行 npm run build，配置不应指向 src/index.ts。'
-        ]
+      ? bundledLauncher
+        ? [
+            '安装包已内置 MCP 运行时；移动或卸载 CodeRecoder 后需要重新生成客户端配置。',
+            '连接后由客户端调用 activate_project 选择工程；恢复与删除工具不要设置为无条件自动批准。'
+          ]
+        : [
+            '连接后由客户端调用 activate_project 选择工程；恢复与删除工具不要设置为无条件自动批准。',
+            '修改 TypeScript 源码后先运行 npm run build，配置不应指向 src/index.ts。'
+          ]
       : [
           '推荐使用 stdio 配置；Electron 显示的 HTTP endpoint 只在当前工程会话存活期间有效。',
           '若出现 Error loading configuration，请在桌面端查看 Serena 状态并使用“重新检测/启动”。'
@@ -202,6 +231,17 @@ export class McpIntegrationService {
 
   projectContext(id: ProjectId, root: string, serena: SerenaStatus): McpProjectContext {
     return { id, root, serena };
+  }
+
+  private async resolveBundledMcpLauncher(): Promise<string | null> {
+    if (!this.bundledMcpLauncher) return null;
+    try {
+      await nodeFs.access(this.bundledMcpLauncher, fsConstants.X_OK);
+      const stat = await nodeFs.stat(this.bundledMcpLauncher);
+      return stat.isFile() ? await nodeFs.realpath(this.bundledMcpLauncher) : null;
+    } catch {
+      return null;
+    }
   }
 
   private async findExecutable(name: string): Promise<string | null> {

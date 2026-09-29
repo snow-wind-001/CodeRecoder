@@ -6,6 +6,7 @@ import test from 'node:test';
 import { ProjectSessionRegistry } from '../desktop/electron/projectSessionRegistry.js';
 import { SerenaProcessManager } from '../desktop/electron/serenaManager.js';
 import { McpIntegrationService } from '../desktop/electron/mcpIntegrationService.js';
+import { PreferenceStore } from '../desktop/electron/preferenceStore.js';
 import {
   assertMainWindow,
   assertProjectAccess,
@@ -329,6 +330,37 @@ test('MCP advisor uses an independent Node executable and valid client schemas',
   }
 });
 
+test('packaged MCP advisor prefers the bundled runtime over a system Node.js', async t => {
+  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder-bundled-runtime-'));
+  const launcher = path.join(fixtureRoot, 'coderecoder-mcp');
+  const serverEntry = path.join(fixtureRoot, 'index.mjs');
+  await fs.writeFile(launcher, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  await fs.writeFile(serverEntry, 'export {};\n');
+  t.after(async () => await fs.rm(fixtureRoot, { recursive: true, force: true }));
+
+  const repositoryRoot = path.resolve(import.meta.dirname, '..');
+  const advisor = new McpIntegrationService(repositoryRoot, {
+    bundledMcpLauncher: launcher,
+    bundledNodeVersion: '24.14.0',
+    serverEntry
+  });
+  const report = await advisor.inspect(null);
+  const runtime = report.items.find(item => item.id === 'node');
+  assert.equal(runtime?.label, '内置 MCP 运行时');
+  assert.equal(runtime?.status, 'available');
+  assert.equal(runtime?.version, '24.14.0');
+  assert.match(runtime?.detail ?? '', /无需系统 Node\.js/);
+  assert.equal(report.items.find(item => item.id === 'server-build')?.path, serverEntry);
+
+  const vscode = await advisor.recommendation('vscode', 'coderecorder', null);
+  const config = JSON.parse(vscode.content) as {
+    servers: { coderecorder: { command: string; args: string[] } };
+  };
+  assert.equal(config.servers.coderecorder.command, await fs.realpath(launcher));
+  assert.deepEqual(config.servers.coderecorder.args, []);
+  assert.match(vscode.notes.join('\n'), /安装包已内置 MCP 运行时/);
+});
+
 test('project windows are bound to one session while the main window may coordinate all', () => {
   const projectA = 'af420000-0000-4000-8000-00000000c91a';
   const projectB = 'bb190000-0000-4000-8000-0000000072ef';
@@ -343,4 +375,75 @@ test('project windows are bound to one session while the main window may coordin
   assert.doesNotThrow(() => assertMainWindow(main));
   assert.equal(assertProjectAccess(main, projectB), projectB);
   assert.equal(resolveProjectForScope(main, undefined, projectA), projectA);
+});
+
+
+test('backup filters persist per project and apply on the next protection start', async t => {
+  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder_desktop_filter_'));
+  const projectPath = path.join(fixtureRoot, 'project');
+  const preferencePath = path.join(fixtureRoot, 'preferences.json');
+  const options = { appVersion: 'test', defaultStorageRoot: path.join(fixtureRoot, 'storage'), preferencePath, serenaCommandPath: null };
+  const registry = new ProjectSessionRegistry(options);
+  await fs.mkdir(path.join(projectPath, 'output'), { recursive: true });
+  await fs.writeFile(path.join(projectPath, 'main.ts'), 'source');
+  await fs.writeFile(path.join(projectPath, 'model.pt'), 'weights');
+  await fs.writeFile(path.join(projectPath, 'diagram.svg'), '<svg/>');
+  await fs.writeFile(path.join(projectPath, 'output', 'result.json'), '{}');
+  t.after(async () => {
+    await registry.shutdown();
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  });
+  await registry.initialize();
+  const { projectId } = requireData(await registry.registerProject({
+    projectPath, autoCheckpoint: false, maxBackups: 10, startOnLaunch: false,
+    serenaEnabled: false, serenaAutoConfigure: false
+  }));
+  const before = (await dashboardFor(registry, projectId)).selectedProject!;
+  assert.equal(before.config.backupScope, 'all');
+  assert.equal(before.snapshots[0].totalFiles, 4);
+  const rejected = await registry.updateBackupFilter(projectId, { excludePaths: ['../outside'] });
+  assert.equal(rejected.success, false);
+  const filter = { backupScope: 'code-and-docs', excludePaths: ['output/'], includeExtensions: ['.SVG'] };
+  assert.equal((await registry.updateBackupFilter(projectId, filter)).success, true);
+  const active = (await dashboardFor(registry, projectId)).selectedProject!;
+  assert.equal(active.project.protectionState, 'running');
+  assert.equal(active.status?.hasUncheckpointedChanges, false, 'running manager retains its original scope');
+  assert.equal(active.config.backupScope, 'code-and-docs');
+  assert.deepEqual(active.config.excludePaths, ['output']);
+  assert.deepEqual(active.config.includeExtensions, ['svg']);
+  await registry.stopProject(projectId, false);
+  const restarted = new ProjectSessionRegistry(options);
+  await restarted.initialize();
+  try {
+    assert.equal((await restarted.startProject(projectId)).success, true);
+    const after = (await dashboardFor(restarted, projectId)).selectedProject!;
+    assert.equal(after.config.backupScope, 'code-and-docs');
+    assert.equal(after.snapshots[0].totalFiles, 2);
+    assert.equal(after.snapshots.length, 2, 'old snapshot remains');
+    const store = new PreferenceStore(preferencePath);
+    assert.equal((await store.load()).preferences.projects[0].backupScope, 'code-and-docs');
+  } finally {
+    await restarted.shutdown();
+  }
+});
+
+test('old schema-v2 project preferences still load with the original backup scope', async t => {
+  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder_filter_compat_'));
+  const projectPath = path.join(fixtureRoot, 'project');
+  const preferencePath = path.join(fixtureRoot, 'preferences.json');
+  const projectId = 'bc98ef01-0f73-4c45-b1d0-a8f0df2f7bbc';
+  await fs.mkdir(projectPath);
+  await fs.writeFile(preferencePath, JSON.stringify({
+    schemaVersion: 2, selectedProjectId: projectId,
+    projects: [{ id: projectId, registeredAt: 1, projectPath, autoCheckpoint: false,
+      maxBackups: 10, startOnLaunch: false, serenaEnabled: false, serenaAutoConfigure: false }]
+  }));
+  const registry = new ProjectSessionRegistry({ appVersion: 'test', preferencePath,
+    defaultStorageRoot: path.join(fixtureRoot, 'storage'), serenaCommandPath: null });
+  t.after(async () => { await registry.shutdown(); await fs.rm(fixtureRoot, { recursive: true, force: true }); });
+  await registry.initialize();
+  const dashboard = await dashboardFor(registry, projectId);
+  assert.equal(dashboard.projects.length, 1);
+  assert.equal(dashboard.selectedProject?.config.backupScope, 'all');
+  assert.deepEqual(dashboard.selectedProject?.config.excludePaths, []);
 });

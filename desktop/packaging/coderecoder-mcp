@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+launcher_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+resources_directory=$(dirname -- "${launcher_directory}")
+application_directory=$(dirname -- "${resources_directory}")
+electron_executable="${application_directory}/coderecoder"
+mcp_entry="${resources_directory}/mcp/index.mjs"
+
+if [ ! -x "${electron_executable}" ]; then
+  printf '%s\n' 'CodeRecoder MCP runtime is missing or is not executable.' >&2
+  exit 1
+fi
+if [ ! -f "${mcp_entry}" ]; then
+  printf '%s\n' 'CodeRecoder MCP entrypoint is missing.' >&2
+  exit 1
+fi
+
+export ELECTRON_RUN_AS_NODE=1
+exec "${electron_executable}" "${mcp_entry}" "$@"

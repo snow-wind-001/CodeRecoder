@@ -1,0 +1,74 @@
+appId: com.coderecoder.desktop
+productName: CodeRecoder
+copyright: Copyright © 2026 spikebai
+asar: true
+npmRebuild: false
+removePackageScripts: true
+
+directories:
+  output: release
+  buildResources: desktop/assets
+
+files:
+  - dist-desktop/**/*
+  - desktop/assets/**/*
+  - package.json
+  - LICENSE
+  - '!**/*.map'
+
+extraResources:
+  - from: desktop/packaging/coderecoder-mcp
+    to: bin/coderecoder-mcp
+  - from: build/mcp/index.mjs
+    to: mcp/index.mjs
+
+extraMetadata:
+  main: dist-desktop/main/index.js
+
+linux:
+  target:
+    - target: deb
+      arch:
+        - x64
+  executableName: coderecoder
+  icon: desktop/assets/coderecoder.png
+  category: Development
+  synopsis: Verified local code backup and recovery console
+  description: >-
+    CodeRecoder provides verified local code snapshots, automatic checkpoints,
+    guarded restore workflows, multi-project Electron management, and MCP
+    integration for AI coding clients.
+  maintainer: spikebai <spikebai@users.noreply.github.com>
+  vendor: CodeRecoder
+  syncDesktopName: true
+  desktop:
+    entry:
+      Name: CodeRecoder
+      GenericName: Code Backup Console
+      Comment: Inspect verified code backups and control safe restores
+      Keywords: backup;snapshot;restore;MCP;code;
+      StartupWMClass: CodeRecoder
+
+deb:
+  packageName: coderecoder
+  packageCategory: devel
+  priority: optional
+  compression: xz
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - libdrm2
+    - libgbm1
+    - libasound2
+    - libx11-xcb1
+    - libcups2
+  recommends: []
+
+artifactName: coderecoder_${version}_${arch}.${ext}

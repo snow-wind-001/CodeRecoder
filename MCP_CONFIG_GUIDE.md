@@ -99,9 +99,16 @@ deactivate_project
   "debounceMs": 1500,
   "reconciliationIntervalMs": 60000,
   "maxBackups": 100,
-  "excludeNames": ["vendor-generated"]
+  "excludeNames": ["vendor-generated"],
+  "backupScope": "code-and-docs",
+  "excludePaths": ["output/", "results_swarm_rescue/", "UsedCode/Models/"],
+  "includeExtensions": ["svg", "png"]
 }
 ```
+
+`backupScope` 可选，缺省为 `all`，保留现有行为。`code-and-docs` 按文件名和扩展名保留源码、配置与文档；常见模型、二进制数据、压缩包、图片和视频默认跳过。用 `includeExtensions` 补充需要的格式。`excludePaths` 接受最多 100 个相对于工程根目录的具体文件或目录路径，不接受通配符、绝对路径或 `..`；目录中的代码和文档也会排除。`excludeNames` 继续按任意层级的文件/目录名称匹配。显式排除优先，不自动读取 `.gitignore`。
+
+恢复旧快照时会保留当前排除的文件；重新激活时若改变过滤配置，先前生成的恢复令牌不可使用，需要重新预览。
 
 ## 故障排除
 
