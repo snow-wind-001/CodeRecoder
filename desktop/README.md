@@ -11,17 +11,22 @@ npm run desktop:build         # 构建到 dist-desktop/
 npm run desktop:start         # 构建并启动桌面应用
 npm run desktop:package:deb   # 构建并验证 amd64 Debian 安装包
 npm run desktop:install-linux # 安装并固定到 GNOME 程序栏
+npm run desktop:deb           # 生成 release/CodeRecoder-<version>-amd64.deb
 npm run test:desktop          # 桌面集成测试
 ```
 
-Linux 启动项安装在当前用户目录，不需要 `sudo`。它引用当前仓库路径，并自动选择满足 `>=22.12.0` 的 NVM Node.js；移动仓库后需重新安装启动项。
+更新源码后，先关闭所有 CodeRecoder 窗口并等待旧进程退出，再运行 `npm run desktop:start`。该命令包含编译；单独运行 `npm run build` 只构建 MCP 内核，不更新桌面界面。应用采用单实例机制，旧进程仍在运行时再次启动只会聚焦旧窗口，不能加载新的备份选项或主进程逻辑。
+
+Linux 安装命令会先检查并补齐 Electron 运行程序、完成构建，再安装当前用户的快捷方式并核对 GNOME 固定结果，不需要 `sudo`。`npm install` 和普通构建不会自动注册快捷方式。启动项引用当前仓库路径，并自动选择满足 `>=22.12.0` 的 Node.js（包括 NVM 安装）；移动仓库后需重新安装启动项。
+
+Electron 下载会使用已有的 `HTTP_PROXY` / `HTTPS_PROXY`（也支持小写变量）。从程序栏启动时，日志写入 `${XDG_STATE_HOME:-~/.local/state}/coderecoder/desktop-launch.log`；运行 `bash desktop/start-coderecoder-desktop.sh --prepare` 可在终端检查运行环境并构建，不打开窗口。
 
 ## Debian 安装包
 
-`npm run desktop:package:deb` 生成 `release/coderecoder_3.0.0_amd64.deb` 及 `.sha256` 校验文件，并自动检查 Debian control 依赖、桌面入口、文件权限、动态库解析及 MCP stdio 握手。安装时使用 `apt`，不要单独使用 `dpkg -i`，这样缺失的 GTK、NSS、音频及桌面运行库会被自动安装：
+`npm run desktop:package:deb` 生成 `release/CodeRecoder-3.1.0-amd64.deb` 及 `.sha256` 校验文件，并自动检查 Debian control 依赖、桌面入口、文件权限、动态库解析及 MCP stdio 握手。安装时使用 `apt`，不要单独使用 `dpkg -i`，这样缺失的 GTK、NSS、音频及桌面运行库会被自动安装：
 
 ```bash
-sudo apt install ./release/coderecoder_3.0.0_amd64.deb
+sudo apt install ./release/CodeRecoder-3.1.0-amd64.deb
 ```
 
 安装包包含 Electron、生产 Node 模块、编译后的桌面界面和独立 `coderecoder-mcp` 启动器。客户端配置不依赖系统 Node.js；Serena 与四类编辑器客户端仍是可选集成。程序安装到 `/opt/CodeRecoder`，用户数据继续存放在 Electron `userData` 目录，升级软件不会覆盖工程注册表或备份数据。
@@ -35,6 +40,8 @@ sudo apt install ./release/coderecoder_3.0.0_amd64.deb
 - Serena 配置检查、sidecar 进程和动态回环 endpoint。
 
 主窗口汇总全部工程。需要并排查看时，可为工程创建一个独立窗口；重复打开会聚焦现有窗口，关闭该窗口不会停止保护。停止或退出时会先尝试创建最终检查点。重复、父子嵌套以及与备份目录重叠的工程会被拒绝。
+
+Serena 与基线备份独立启动。建立基线期间界面显示“正在建立保护”，可以查看状态和编辑下次启动使用的备份范围。状态读取立即返回缓存，文件核验在后台串行执行并合并频繁请求，界面显示上次成功核验时间；恢复预览与确认仍执行实时校验。
 
 偏好以 schema v2、`0600` 权限原子保存。旧单工程偏好会迁移，但默认不自动启动。
 
@@ -56,7 +63,11 @@ sudo apt install ./release/coderecoder_3.0.0_amd64.deb
 
 ## Serena 启动与恢复
 
+缺少 CLI 时，连接工作台提供“下载并安装 Serena”，自动准备独立 Python 环境。终端可运行 `npm run serena:install` 或安装包提供的 `coderecoder-install-serena`；C# 工程在命令后增加 `--with-dotnet`（npm 命令使用 `-- --with-dotnet`）。安装操作可在退出应用时取消，失败日志保存在用户数据目录下的 `logs/serena-install.log`。
+
 启用后，桌面端会发现可执行文件、按需创建 `.serena/project.yml`、以固定参数绑定 `127.0.0.1`，并通过真实 MCP `initialize` 握手确认就绪。
+
+后台创建配置保留检测到的主要语言，可选语言需要在 `language_servers` 中配置。语言服务可能另需 Node.js/npm 或 .NET；握手成功后仍应验证所用语言的符号查询。
 
 若明确检测到 `Error loading configuration` 且自动配置已开启，原配置会先保存为 `.coderecoder-invalid-<timestamp>.bak`，再由 `serena project create` 重建；重建失败则尝试恢复原文件。Serena 降级不会改变备份健康状态。
 
@@ -73,3 +84,5 @@ sudo apt install ./release/coderecoder_3.0.0_amd64.deb
 - MCP 与桌面同时操作同一工程时，跨进程工程锁会串行化关键写入。
 
 运行数据位于 Electron `userData` 目录；`dist-desktop/` 不应提交。主 README 参见 [`../README.md`](../README.md)。
+
+安装包制作、验证和发布步骤见 [`../docs/LINUX_RELEASE.md`](../docs/LINUX_RELEASE.md)。

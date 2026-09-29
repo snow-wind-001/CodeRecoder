@@ -18,12 +18,18 @@ const status = computed(() => props.project.status);
 const latestAt = computed(() => status.value?.latestSnapshot?.createdAt ?? automatic.value.lastCheckpointAt);
 
 const presentation = computed(() => {
-  if (automatic.value.state === 'degraded') {
+  if (props.project.project.protectionState === 'starting' || (!status.value && props.project.project.protectionState !== 'degraded')) {
+    return {
+      tone: 'busy', statusLine: '首次备份与完整性核验进行中', title: '正在建立保护',
+      detail: '基线完成后开启自动检查点，大型工程可能需要较长时间'
+    };
+  }
+  if (automatic.value.state === 'degraded' || props.project.project.protectionState === 'degraded') {
     return {
       tone: 'danger',
       statusLine: '自动检查点需要处理',
       title: '保护已降级',
-      detail: automatic.value.lastError ?? '请检查文件监听器状态'
+      detail: automatic.value.lastError ?? props.project.project.lastError ?? '请检查文件监听器与备份状态'
     };
   }
   if (automatic.value.state === 'paused' || automatic.value.backupInProgress) {
@@ -68,10 +74,12 @@ const presentation = computed(() => {
     </div>
     <h1 id="protection-title">{{ presentation.title }}</h1>
     <p>{{ presentation.detail }}</p>
+    <p v-if="project.statusRefreshing" class="filter-help">正在核验文件变更，当前显示上次结果。</p>
+    <p v-else-if="project.statusCheckedAt" class="filter-help">上次核验：{{ formatRelative(project.statusCheckedAt) }}</p>
     <button
       class="protection-action"
       type="button"
-      :disabled="busy"
+      :disabled="busy || project.project.protectionState === 'starting'"
       data-testid="create-backup-button"
       @click="$emit('backup')"
     >
@@ -82,7 +90,7 @@ const presentation = computed(() => {
     <div class="health-grid">
       <div>
         <span>当前代码</span>
-        <b>{{ status?.hasUncheckpointedChanges ? '有待备份变更' : '已完整备份' }}</b>
+        <b>{{ !status || project.project.protectionState === 'starting' ? '等待核验' : status.hasUncheckpointedChanges ? '有待备份变更' : '已完整备份' }}</b>
       </div>
       <div>
         <span>备份位置</span>

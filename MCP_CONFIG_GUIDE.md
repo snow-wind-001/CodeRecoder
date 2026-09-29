@@ -10,6 +10,14 @@ npm run build
 
 客户端必须以 stdio 方式启动 `node /absolute/path/CodeRecoder/dist/index.js`。请使用绝对路径；服务不会依赖客户端当前打开的工程。
 
+Debian 安装版使用 `/usr/bin/coderecoder-mcp`，不再传入 `dist/index.js` 参数，也不依赖外部 Node.js：
+
+```bash
+codex mcp add coderecoder -- /usr/bin/coderecoder-mcp
+```
+
+Serena 的下载、C# 依赖及 Codex 配置见 [README 的 Serena 部分](./README.md#serena)。两个服务使用独立名称 `coderecoder` 与 `serena`，保留其他已配置 MCP 服务。
+
 ## Codex
 
 OpenAI 官方文档给出的 stdio 形式是 `codex mcp add <name> -- <command>`：

@@ -1,74 +1,63 @@
 appId: com.coderecoder.desktop
 productName: CodeRecoder
-copyright: Copyright © 2026 spikebai
 asar: true
 npmRebuild: false
 removePackageScripts: true
-
 directories:
   output: release
-  buildResources: desktop/assets
-
+extraMetadata:
+  main: dist-desktop/main/index.js
 files:
-  - dist-desktop/**/*
-  - desktop/assets/**/*
+  - dist-desktop/**
+  - dist/**
+  - desktop/assets/coderecoder.png
   - package.json
   - LICENSE
-  - '!**/*.map'
-
 extraResources:
   - from: desktop/packaging/coderecoder-mcp
     to: bin/coderecoder-mcp
   - from: build/mcp/index.mjs
     to: mcp/index.mjs
-
-extraMetadata:
-  main: dist-desktop/main/index.js
-
+extraFiles:
+  - from: desktop/linux/coderecoder-mcp
+    to: bin/coderecoder-mcp
+  - from: scripts/install-serena.sh
+    to: bin/coderecoder-install-serena
 linux:
   target:
     - target: deb
-      arch:
-        - x64
+      arch: [x64]
   executableName: coderecoder
+  syncDesktopName: true
   icon: desktop/assets/coderecoder.png
   category: Development
-  synopsis: Verified local code backup and recovery console
-  description: >-
-    CodeRecoder provides verified local code snapshots, automatic checkpoints,
-    guarded restore workflows, multi-project Electron management, and MCP
-    integration for AI coding clients.
-  maintainer: spikebai <spikebai@users.noreply.github.com>
-  vendor: CodeRecoder
-  syncDesktopName: true
+  artifactName: CodeRecoder-${version}-${arch}.${ext}
   desktop:
     entry:
       Name: CodeRecoder
-      GenericName: Code Backup Console
-      Comment: Inspect verified code backups and control safe restores
+      Comment: Local code backups, verified restore and MCP integration
+      StartupWMClass: coderecoder
       Keywords: backup;snapshot;restore;MCP;code;
-      StartupWMClass: CodeRecoder
-
 deb:
   packageName: coderecoder
   packageCategory: devel
-  priority: optional
-  compression: xz
+  recommends: []
+  maintainer: CodeRecoder contributors <snow-wind-001@users.noreply.github.com>
+  afterInstall: build/after-install.sh
+  afterRemove: build/after-remove.sh
   depends:
     - libgtk-3-0
-    - libnotify4
     - libnss3
-    - libxss1
-    - libxtst6
-    - xdg-utils
-    - libatspi2.0-0
-    - libuuid1
-    - libsecret-1-0
-    - libdrm2
+    - libasound2 | libasound2t64
     - libgbm1
-    - libasound2
+    - libdrm2
     - libx11-xcb1
     - libcups2
-  recommends: []
-
-artifactName: coderecoder_${version}_${arch}.${ext}
+    - libxss1
+    - libxtst6
+    - libatspi2.0-0
+    - libsecret-1-0
+    - libnotify4
+    - libuuid1
+    - xdg-utils
+    - curl

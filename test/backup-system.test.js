@@ -40,6 +40,83 @@ async function waitFor(predicate, timeoutMs = 5_000) {
   assert.fail(`Condition was not met within ${timeoutMs}ms`);
 }
 
+test('mixed-case and Unicode paths remain readable across legacy locale ordering and restarts', async t => {
+  const { projectRoot, storageRoot } = await createFixture(t, 'unicode-manifest');
+  const names = ['A.ts', 'a.ts', '_helper.ts', 'é.ts', 'e\u0301.ts', '目录/配置.ts', '目录/Build.cs'];
+  for (const name of names) {
+    await fs.mkdir(path.dirname(path.join(projectRoot, name)), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, name), `original ${name}\n`);
+  }
+  const manager = new BackupManager();
+  await manager.initialize(projectRoot, { storageRoot });
+  const firstId = snapshotId(await manager.createBackup({ name: 'multilingual' }));
+  requireData(await manager.verifyBackup(firstId));
+  const manifestPath = path.join(manager.getStorageRoot(), 'snapshots', firstId, 'manifest.json');
+  const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  assert.deepEqual(manifest.entries.map(entry => entry.path), manifest.entries.map(entry => entry.path).sort());
+
+  const writeLegacyManifest = async entries => {
+    const stableEntries = entries.map(({ path, kind, mode, size, hash, linkTarget }) => ({ path, kind, mode, size, hash, linkTarget }));
+    const treeHash = crypto.createHash('sha256').update(JSON.stringify(stableEntries)).digest('hex');
+    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, entries, evidence: { ...manifest.evidence, treeHash } }));
+  };
+  // Existing 3.0 manifests must be read in their original, hashed order.
+  for (const locale of ['en-US', 'zh-CN']) {
+    const collator = new Intl.Collator(locale);
+    await writeLegacyManifest([...manifest.entries].sort((left, right) => collator.compare(left.path, right.path)));
+    requireData(await manager.verifyBackup(firstId));
+  }
+  const legacyBytes = await fs.readFile(manifestPath);
+  const restarted = new BackupManager();
+  await restarted.initialize(projectRoot, { storageRoot });
+  await fs.writeFile(path.join(projectRoot, 'a.ts'), 'changed\n');
+  const secondId = snapshotId(await restarted.createBackup({ name: 'after restart' }));
+  requireData(await restarted.verifyBackup(secondId));
+  const preview = requireData(await restarted.previewRestore(firstId, 'exact'));
+  requireData(await restarted.restoreBackup(firstId, preview.confirmationToken));
+  for (const name of names) assert.equal(await fs.readFile(path.join(projectRoot, name), 'utf8'), `original ${name}\n`);
+  assert.deepEqual(await fs.readFile(manifestPath), legacyBytes, 'reading and restoring must preserve the old manifest');
+
+  // A valid tree hash must not make duplicate or aliased paths acceptable.
+  for (const entries of [
+    [...manifest.entries, manifest.entries[0]],
+    [{ ...manifest.entries[0], path: '目录/../A.ts' }, ...manifest.entries.slice(1)]
+  ]) {
+    await writeLegacyManifest(entries);
+    const rejected = await restarted.verifyBackup(firstId);
+    assert.equal(rejected.success, false);
+    assert.match(rejected.error, /invalid entry/);
+  }
+  await fs.writeFile(manifestPath, legacyBytes);
+});
+
+test('a concurrent edit is retried without publishing an inconsistent baseline', async t => {
+  const { projectRoot, storageRoot } = await createFixture(t, 'concurrent-edit');
+  const source = path.join(projectRoot, 'source.ts');
+  await fs.writeFile(source, 'before edit\n');
+  const manager = new BackupManager();
+  await manager.initialize(projectRoot, { storageRoot });
+  const copyFile = fs.copyFile.bind(fs);
+  let edited = false;
+  t.mock.method(fs, 'copyFile', async (from, to, ...args) => {
+    if (from === source && !edited) {
+      edited = true;
+      await fs.writeFile(source, 'after edit\n');
+    }
+    return await copyFile(from, to, ...args);
+  });
+  const id = snapshotId(await manager.createBackup({ trigger: 'activation' }));
+  requireData(await manager.verifyBackup(id));
+  assert.equal(await fs.readFile(path.join(manager.getStorageRoot(), 'snapshots', id, 'tree', 'source.ts'), 'utf8'), 'after edit\n');
+  assert.equal(requireData(await manager.listBackups()).total, 1);
+  assert.deepEqual((await fs.readdir(path.join(manager.getStorageRoot(), 'snapshots'))).filter(name => name.startsWith('.partial-')), []);
+  await fs.writeFile(path.join(manager.getStorageRoot(), 'snapshots', id, 'tree', 'source.ts'), 'corrupt stored copy\n');
+  const corrupted = await manager.createBackup({ name: 'must not reuse corruption' });
+  assert.equal(corrupted.success, false);
+  assert.match(corrupted.error, /Previous backup content hash mismatch/);
+  assert.equal(requireData(await manager.listBackups()).total, 1);
+});
+
 test('verified backups capture changes and restore exact bytes safely', async t => {
   const { projectRoot, storageRoot } = await createFixture(t, 'restore');
   await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });

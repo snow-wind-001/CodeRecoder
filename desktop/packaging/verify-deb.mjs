@@ -73,7 +73,7 @@ async function findDebPackage() {
   if (process.argv[2]) return path.resolve(process.argv[2]);
   const packageJson = JSON.parse(await fs.readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
   const candidates = (await fs.readdir(releaseDirectory))
-    .filter(name => name.startsWith(`coderecoder_${packageJson.version}_`) && name.endsWith('.deb'));
+    .filter(name => name.startsWith(`CodeRecoder-${packageJson.version}-`) && name.endsWith('.deb'));
   assert.equal(candidates.length, 1, `Expected one CodeRecoder ${packageJson.version} deb, found: ${candidates.join(', ') || 'none'}`);
   return path.join(releaseDirectory, candidates[0]);
 }

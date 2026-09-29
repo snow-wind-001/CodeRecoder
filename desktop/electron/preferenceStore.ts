@@ -53,6 +53,7 @@ export interface PreferenceLoadResult {
 
 export class PreferenceStore {
   private readonly filePath: string;
+  private saveTail: Promise<void> = Promise.resolve();
 
   constructor(filePath: string) {
     this.filePath = path.resolve(filePath);
@@ -107,8 +108,14 @@ export class PreferenceStore {
 
   async save(preferences: DesktopPreferences): Promise<void> {
     const validated = preferencesSchema.parse(preferences);
+    const saving = this.saveTail.then(async () => await this.writePreferences(validated));
+    this.saveTail = saving.catch(() => undefined);
+    await saving;
+  }
+
+  private async writePreferences(validated: DesktopPreferences): Promise<void> {
     await nodeFs.mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
-    const temporaryPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    const temporaryPath = `${this.filePath}.tmp-${process.pid}-${randomUUID()}`;
     try {
       await nodeFs.writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, {
         encoding: 'utf8',

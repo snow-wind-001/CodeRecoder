@@ -4,9 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ProjectSessionRegistry } from '../desktop/electron/projectSessionRegistry.js';
+import { ProjectSession } from '../desktop/electron/projectSession.js';
+import { OperationScheduler } from '../desktop/electron/operationScheduler.js';
+import { BackupManager } from '../src/backupManager.js';
 import { SerenaProcessManager } from '../desktop/electron/serenaManager.js';
 import { McpIntegrationService } from '../desktop/electron/mcpIntegrationService.js';
 import { PreferenceStore } from '../desktop/electron/preferenceStore.js';
+import type { DesktopPreferences } from '../desktop/electron/preferenceStore.js';
+import { SerenaInstaller } from '../desktop/electron/serenaInstaller.js';
 import {
   assertMainWindow,
   assertProjectAccess,
@@ -214,6 +219,9 @@ const http = require('node:http');
 const path = require('node:path');
 const args = process.argv.slice(2);
 if (args[0] === 'project' && args[1] === 'create') {
+  // Model Serena's optional-language prompt: EOF without an answer must abort.
+  const answer = fs.readFileSync(0, 'utf8');
+  if (!answer.startsWith('n\\n')) process.exit(4);
   const root = args[2];
   fs.mkdirSync(path.join(root, '.serena'), { recursive: true });
   fs.writeFileSync(path.join(root, '.serena', 'project.yml'), 'project_name: repaired\\nlanguage_servers: []\\n');
@@ -280,14 +288,14 @@ test('MCP advisor uses an independent Node executable and valid client schemas',
   assert.equal(node?.status, 'available');
   assert.match(node?.path ?? '', /node$/);
 
-  const vscode = await advisor.recommendation('vscode', 'coderecorder', null);
-  const vscodeConfig = JSON.parse(vscode.content) as { servers: { coderecorder: { command: string; args: string[] } } };
-  assert.match(vscodeConfig.servers.coderecorder.command, /node$/);
-  assert.equal(vscodeConfig.servers.coderecorder.args[0], path.join(repositoryRoot, 'dist', 'index.js'));
+  const vscode = await advisor.recommendation('vscode', 'coderecoder', null);
+  const vscodeConfig = JSON.parse(vscode.content) as { servers: { coderecoder: { command: string; args: string[] } } };
+  assert.match(vscodeConfig.servers.coderecoder.command, /node$/);
+  assert.equal(vscodeConfig.servers.coderecoder.args[0], path.join(repositoryRoot, 'dist', 'index.js'));
 
-  const cursor = await advisor.recommendation('cursor', 'coderecorder', null);
-  const cursorConfig = JSON.parse(cursor.content) as { mcpServers: { coderecorder: unknown } };
-  assert.ok(cursorConfig.mcpServers.coderecorder);
+  const cursor = await advisor.recommendation('cursor', 'coderecoder', null);
+  const cursorConfig = JSON.parse(cursor.content) as { mcpServers: { coderecoder: unknown } };
+  assert.ok(cursorConfig.mcpServers.coderecoder);
 
   const project = advisor.projectContext(
     'af420000-0000-4000-8000-00000000c91a',
@@ -308,7 +316,7 @@ test('MCP advisor uses an independent Node executable and valid client schemas',
     }
   );
   for (const target of ['vscode', 'cursor', 'claude-code', 'codex'] as const) {
-    const codeRecoder = await advisor.recommendation(target, 'coderecorder', project);
+    const codeRecoder = await advisor.recommendation(target, 'coderecoder', project);
     const serena = await advisor.recommendation(target, 'serena', project);
     assert.equal(codeRecoder.endpointIsTemporary, false);
     assert.equal(serena.endpointIsTemporary, true);
@@ -352,13 +360,59 @@ test('packaged MCP advisor prefers the bundled runtime over a system Node.js', a
   assert.match(runtime?.detail ?? '', /无需系统 Node\.js/);
   assert.equal(report.items.find(item => item.id === 'server-build')?.path, serverEntry);
 
-  const vscode = await advisor.recommendation('vscode', 'coderecorder', null);
+  const vscode = await advisor.recommendation('vscode', 'coderecoder', null);
   const config = JSON.parse(vscode.content) as {
-    servers: { coderecorder: { command: string; args: string[] } };
+    servers: { coderecoder: { command: string; args: string[] } };
   };
-  assert.equal(config.servers.coderecorder.command, await fs.realpath(launcher));
-  assert.deepEqual(config.servers.coderecorder.args, []);
+  assert.equal(config.servers.coderecoder.command, await fs.realpath(launcher));
+  assert.deepEqual(config.servers.coderecoder.args, []);
   assert.match(vscode.notes.join('\n'), /安装包已内置 MCP 运行时/);
+});
+
+test('packaged MCP recommendations use the installed launcher without source arguments', async t => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder-packaged-advisor-'));
+  t.after(async () => await fs.rm(fixture, { recursive: true, force: true }));
+  const launcher = path.join(fixture, 'coderecoder-mcp');
+  await fs.writeFile(launcher, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const advisor = new McpIntegrationService(path.resolve(import.meta.dirname, '..'), { bundledMcpLauncher: launcher });
+  const report = await advisor.inspect(null);
+  assert.equal(report.ready, true);
+  const recommendation = await advisor.recommendation('cursor', 'coderecoder', null);
+  const config = JSON.parse(recommendation.content);
+  assert.equal(config.mcpServers.coderecoder.command, launcher);
+  assert.deepEqual(config.mcpServers.coderecoder.args, []);
+});
+
+test('Serena installer shares one download and preserves failure diagnostics', async t => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder-installer-'));
+  const script = path.join(fixture, 'installer.sh');
+  const installer = new SerenaInstaller(script, fixture);
+  t.after(async () => { installer.stop(); await fs.rm(fixture, { recursive: true, force: true }); });
+  await fs.writeFile(script, '#!/bin/sh\nprintf "simulated download failure\\n" >&2\nexit 17\n');
+  const first = installer.install();
+  assert.equal(installer.install(), first);
+  await assert.rejects(first, /Serena 安装未完成/);
+  const log = await fs.readFile(path.join(fixture, 'serena-install.log'), 'utf8');
+  assert.match(log, /simulated download failure/);
+  assert.equal(log.match(/Installing Serena/g)?.length, 1);
+});
+
+test('Serena installer stops a downloader that ignores SIGTERM', async t => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder-installer-stop-'));
+  const script = path.join(fixture, 'installer.sh');
+  const installer = new SerenaInstaller(script, fixture);
+  t.after(async () => { installer.stop(); await fs.rm(fixture, { recursive: true, force: true }); });
+  await fs.writeFile(script, '#!/bin/sh\ntrap "" TERM\nprintf "downloader ready\\n"\nsleep 30\n');
+  const installation = installer.install();
+  const rejected = assert.rejects(installation, /Serena 安装未完成/);
+  const deadline = Date.now() + 5_000;
+  while (!(await fs.readFile(path.join(fixture, 'serena-install.log'), 'utf8').catch(() => '')).includes('downloader ready')) {
+    assert.ok(Date.now() < deadline, 'downloader did not start');
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  installer.stop();
+  await rejected;
+  await assert.rejects(installer.install(), /已取消/);
 });
 
 test('project windows are bound to one session while the main window may coordinate all', () => {
@@ -446,4 +500,98 @@ test('old schema-v2 project preferences still load with the original backup scop
   assert.equal(dashboard.projects.length, 1);
   assert.equal(dashboard.selectedProject?.config.backupScope, 'all');
   assert.deepEqual(dashboard.selectedProject?.config.excludePaths, []);
+});
+
+
+test('slow baselines do not block dashboard reads or independent Serena startup', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder_startup_'));
+  const projectPath = path.join(root, 'project');
+  await fs.mkdir(projectPath);
+  await fs.writeFile(path.join(projectPath, 'main.ts'), 'source');
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const baselineEntered = new Promise<void>(resolve => { entered = resolve; });
+  const original = BackupManager.prototype.createBackup;
+  t.mock.method(BackupManager.prototype, 'createBackup', async function (this: BackupManager, options: Parameters<BackupManager['createBackup']>[0]) {
+    entered(); await gate; return await original.call(this, options);
+  });
+  const serenaStart = t.mock.method(SerenaProcessManager.prototype, 'start');
+  const session = new ProjectSession({ id: '11111111-1111-4111-8111-111111111111', registeredAt: Date.now(),
+    config: { projectPath, storageRoot: path.join(root, 'storage'), autoCheckpoint: false,
+      maxBackups: 10, startOnLaunch: false, serenaEnabled: true, serenaAutoConfigure: true },
+    scheduler: new OperationScheduler(1), serenaCommandPath: null });
+  const starting = session.start();
+  try {
+    await baselineEntered;
+    const result = await Promise.race([session.dashboard(true), new Promise<null>(resolve => setTimeout(() => resolve(null), 250))]);
+    assert.ok(result, 'dashboard must not wait behind a baseline');
+    assert.equal(result.project.protectionState, 'starting');
+    assert.equal(result.project.automaticCheckpoint.state, 'stopped');
+    assert.equal(serenaStart.mock.callCount(), 1, 'Serena must start before the baseline completes');
+    release();
+    assert.equal((await starting).success, true);
+  } finally {
+    release(); await starting; await session.stop(false);
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('dashboard refresh scans are coalesced and expose their freshness without blocking', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder_dashboard_'));
+  const projectPath = path.join(root, 'project');
+  await fs.mkdir(projectPath);
+  await fs.writeFile(path.join(projectPath, 'main.ts'), 'source');
+  const session = new ProjectSession({ id: '22222222-2222-4222-8222-222222222222', registeredAt: Date.now(),
+    config: { projectPath, storageRoot: path.join(root, 'storage'), autoCheckpoint: false,
+      maxBackups: 10, startOnLaunch: false, serenaEnabled: false, serenaAutoConfigure: false },
+    scheduler: new OperationScheduler(1) });
+  assert.equal((await session.start()).success, true);
+  const before = await session.dashboard(false);
+  assert.ok(before.statusCheckedAt);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const scanning = new Promise<void>(resolve => { entered = resolve; });
+  const original = BackupManager.prototype.getStatus;
+  const probe = t.mock.method(BackupManager.prototype, 'getStatus', async function (this: BackupManager) {
+    entered(); await gate; return await original.call(this);
+  });
+  Reflect.set(session, 'lastCacheAttemptAt', 0);
+  try {
+    const refreshing = await session.dashboard(true);
+    assert.equal(refreshing.statusRefreshing, true);
+    await scanning;
+    const cached = await session.dashboard(true);
+    assert.equal(cached.statusCheckedAt, before.statusCheckedAt);
+    assert.equal(probe.mock.callCount(), 1);
+    release();
+    const deadline = Date.now() + 3000;
+    while ((await session.dashboard(false)).statusRefreshing) {
+      assert.ok(Date.now() < deadline, 'background refresh did not settle');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    await session.dashboard(true);
+    assert.equal(probe.mock.callCount(), 1, 'state events must not create a scan loop');
+  } finally {
+    release(); await session.stop(false);
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('simultaneous preference writes are serialized and retain the newest settings', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'coderecoder_preference_queue_'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new PreferenceStore(path.join(root, 'preferences.json'));
+  t.mock.method(Date, 'now', () => 1000);
+  const base: DesktopPreferences = { schemaVersion: 2, selectedProjectId: null, projects: [{
+    id: '33333333-3333-4333-8333-333333333333', registeredAt: 1, projectPath: path.join(root, 'project'),
+    autoCheckpoint: true, maxBackups: 2, startOnLaunch: false, serenaEnabled: false, serenaAutoConfigure: false
+  }] };
+  await Promise.all(Array.from({ length: 20 }, (_, index) => store.save({
+    ...base, projects: [{ ...base.projects[0], maxBackups: index + 2 }]
+  })));
+  assert.equal((await store.load()).preferences.projects[0].maxBackups, 21);
+  assert.deepEqual(await fs.readdir(root), ['preferences.json']);
 });

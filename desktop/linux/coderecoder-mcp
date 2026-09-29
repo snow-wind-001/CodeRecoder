@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+application_directory=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "${application_directory}/resources/bin/coderecoder-mcp" "$@"

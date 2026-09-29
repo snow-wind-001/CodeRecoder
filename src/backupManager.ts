@@ -11,6 +11,8 @@ const LOCK_WAIT_MS = 30 * 1000;
 const LOCK_HEARTBEAT_MS = 2 * 1000;
 const RESTORE_TOKEN_TTL_MS = 5 * 60 * 1000;
 
+class SourceChangedDuringBackupError extends Error {}
+
 export type BackupEntryKind = 'directory' | 'file' | 'symlink';
 export type BackupTrigger = 'activation' | 'automatic' | 'manual' | 'pre-restore' | 'reconciliation';
 export type RestoreMode = 'exact' | 'overlay';
@@ -327,112 +329,122 @@ export class BackupManager {
 
   async createBackup(options: CreateBackupOptions = {}): Promise<BackupResponse> {
     this.assertInitialized();
-
-    try {
-      return await this.withOperationLocks(async () => {
-        const index = await this.readIndex();
-        const entries = await this.scanProject();
-        const treeHash = this.calculateTreeHash(entries);
-        const previousSummary = index.snapshots[index.snapshots.length - 1];
-        const previousManifest = previousSummary
-          ? await this.readManifest(previousSummary.id)
-          : undefined;
-
-        if (options.skipIfUnchanged && previousManifest?.evidence.treeHash === treeHash) {
-          return {
-            success: true,
-            message: 'No code changes detected; automatic checkpoint skipped',
-            data: {
-              skipped: true,
-              reason: 'unchanged',
-              latestSnapshotId: previousManifest.id,
-              treeHash
-            }
-          };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.createBackupAttempt(options);
+      } catch (error) {
+        if (error instanceof SourceChangedDuringBackupError && attempt < 2) {
+          console.error(`Retrying backup after a concurrent edit (${attempt + 1}/2): ${error.message}`);
+          await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+          continue;
         }
-
-        const id = crypto.randomUUID();
-        const createdAt = Date.now();
-        const stagingRoot = path.join(this.snapshotsRoot, `.partial-${id}`);
-        const finalRoot = path.join(this.snapshotsRoot, id);
-        const treeRoot = path.join(stagingRoot, 'tree');
-        const changes = this.compareEntries(previousManifest?.entries ?? [], entries);
-
-        await fs.remove(stagingRoot);
-        await fs.ensureDir(treeRoot);
-        await nodeFs.chmod(stagingRoot, 0o700);
-        await nodeFs.chmod(treeRoot, 0o700);
-
-        try {
-          const materializeStats = await this.materializeTree(
-            entries,
-            treeRoot,
-            previousManifest
-          );
-
-          const git = await this.readGitEvidence();
-          const manifest: BackupManifest = {
-            schemaVersion: SCHEMA_VERSION,
-            id,
-            projectRoot: this.projectRootReal,
-            createdAt,
-            name: options.name || this.defaultBackupName(createdAt, options.trigger ?? 'manual'),
-            prompt: options.prompt || 'Code backup checkpoint',
-            tags: options.tags ?? [],
-            trigger: options.trigger ?? 'manual',
-            storageMode: previousManifest ? 'hardlink-deduplicated' : 'full-copy',
-            parentSnapshotId: previousManifest?.id,
-            status: 'verified',
-            entries,
-            changes,
-            evidence: {
-              hashAlgorithm: 'sha256',
-              treeHash,
-              copiedFiles: materializeStats.copiedFiles,
-              linkedFiles: materializeStats.linkedFiles,
-              totalFiles: entries.filter(entry => entry.kind === 'file').length,
-              logicalBytes: materializeStats.logicalBytes,
-              storedBytes: materializeStats.storedBytes
-            },
-            git
-          };
-
-          await this.atomicWriteJson(path.join(stagingRoot, 'manifest.json'), manifest);
-          await nodeFs.rename(stagingRoot, finalRoot);
-          await this.syncDirectory(this.snapshotsRoot);
-
-          const summary = this.toSummary(manifest);
-          index.snapshots.push(summary);
-          index.updatedAt = Date.now();
-
-          const expired = this.applyRetention(
-            index,
-            new Set(options.preserveSnapshotIds ?? [])
-          );
-          await this.atomicWriteJson(this.indexPath, index);
-
-          for (const expiredId of expired) {
-            await fs.remove(path.join(this.snapshotsRoot, expiredId));
-          }
-          if (expired.length > 0) await this.syncDirectory(this.snapshotsRoot);
-
-          return {
-            success: true,
-            message: 'Verified code backup created',
-            data: {
-              snapshot: summary,
-              storageRoot: this.storageRoot,
-              verification: 'verified'
-            }
-          };
-        } catch (error) {
-          await fs.remove(stagingRoot);
-          throw error;
-        }
-      });
-    } catch (error) {
-      return this.failure('Failed to create code backup', error);
+        return this.failure('Failed to create code backup', error);
+      }
     }
+  }
+
+  private async createBackupAttempt(options: CreateBackupOptions): Promise<BackupResponse> {
+    return await this.withOperationLocks(async () => {
+      const index = await this.readIndex();
+      const entries = await this.scanProject();
+      const treeHash = this.calculateTreeHash(entries);
+      const previousSummary = index.snapshots[index.snapshots.length - 1];
+      const previousManifest = previousSummary
+        ? await this.readManifest(previousSummary.id)
+        : undefined;
+
+      if (options.skipIfUnchanged && previousManifest?.evidence.treeHash === treeHash) {
+        return {
+          success: true,
+          message: 'No code changes detected; automatic checkpoint skipped',
+          data: {
+            skipped: true,
+            reason: 'unchanged',
+            latestSnapshotId: previousManifest.id,
+            treeHash
+          }
+        };
+      }
+
+      const id = crypto.randomUUID();
+      const createdAt = Date.now();
+      const stagingRoot = path.join(this.snapshotsRoot, `.partial-${id}`);
+      const finalRoot = path.join(this.snapshotsRoot, id);
+      const treeRoot = path.join(stagingRoot, 'tree');
+      const changes = this.compareEntries(previousManifest?.entries ?? [], entries);
+
+      await fs.remove(stagingRoot);
+      await fs.ensureDir(treeRoot);
+      await nodeFs.chmod(stagingRoot, 0o700);
+      await nodeFs.chmod(treeRoot, 0o700);
+
+      try {
+        const materializeStats = await this.materializeTree(
+          entries,
+          treeRoot,
+          previousManifest
+        );
+
+        const git = await this.readGitEvidence();
+        const manifest: BackupManifest = {
+          schemaVersion: SCHEMA_VERSION,
+          id,
+          projectRoot: this.projectRootReal,
+          createdAt,
+          name: options.name || this.defaultBackupName(createdAt, options.trigger ?? 'manual'),
+          prompt: options.prompt || 'Code backup checkpoint',
+          tags: options.tags ?? [],
+          trigger: options.trigger ?? 'manual',
+          storageMode: previousManifest ? 'hardlink-deduplicated' : 'full-copy',
+          parentSnapshotId: previousManifest?.id,
+          status: 'verified',
+          entries,
+          changes,
+          evidence: {
+            hashAlgorithm: 'sha256',
+            treeHash,
+            copiedFiles: materializeStats.copiedFiles,
+            linkedFiles: materializeStats.linkedFiles,
+            totalFiles: entries.filter(entry => entry.kind === 'file').length,
+            logicalBytes: materializeStats.logicalBytes,
+            storedBytes: materializeStats.storedBytes
+          },
+          git
+        };
+
+        await this.atomicWriteJson(path.join(stagingRoot, 'manifest.json'), manifest);
+        await nodeFs.rename(stagingRoot, finalRoot);
+        await this.syncDirectory(this.snapshotsRoot);
+
+        const summary = this.toSummary(manifest);
+        index.snapshots.push(summary);
+        index.updatedAt = Date.now();
+
+        const expired = this.applyRetention(
+          index,
+          new Set(options.preserveSnapshotIds ?? [])
+        );
+        await this.atomicWriteJson(this.indexPath, index);
+
+        for (const expiredId of expired) {
+          await fs.remove(path.join(this.snapshotsRoot, expiredId));
+        }
+        if (expired.length > 0) await this.syncDirectory(this.snapshotsRoot);
+
+        return {
+          success: true,
+          message: 'Verified code backup created',
+          data: {
+            snapshot: summary,
+            storageRoot: this.storageRoot,
+            verification: 'verified'
+          }
+        };
+      } catch (error) {
+        await fs.remove(stagingRoot);
+        throw error;
+      }
+    });
   }
 
   async listBackups(limit = 50): Promise<BackupResponse> {
@@ -822,10 +834,12 @@ export class BackupManager {
       stats.logicalBytes += entry.size;
       const previousEntry = previousEntries.get(entry.path);
       const canLink = previousTreeRoot && previousEntry && this.entriesEqual(previousEntry, entry);
+      let linked = false;
 
       if (canLink) {
         try {
           await nodeFs.link(this.safeJoin(previousTreeRoot, entry.path), destinationPath);
+          linked = true;
           stats.linkedFiles++;
         } catch {
           await this.copySourceFile(entry, destinationPath);
@@ -840,7 +854,8 @@ export class BackupManager {
 
       const copiedHash = await this.hashFile(destinationPath);
       if (copiedHash !== entry.hash) {
-        throw new Error(`Source changed while backing up: ${entry.path}`);
+        if (linked) throw new Error(`Previous backup content hash mismatch: ${entry.path}`);
+        throw new SourceChangedDuringBackupError(`Source changed while backing up: ${entry.path}`);
       }
       await nodeFs.chmod(destinationPath, 0o600);
       await this.syncFile(destinationPath);
@@ -1048,7 +1063,7 @@ export class BackupManager {
 
     const walk = async (directoryPath: string): Promise<void> => {
       const directoryEntries = await nodeFs.readdir(directoryPath, { withFileTypes: true });
-      directoryEntries.sort((left, right) => left.name.localeCompare(right.name));
+      directoryEntries.sort((left, right) => this.comparePaths(left.name, right.name));
 
       for (const directoryEntry of directoryEntries) {
         const absolutePath = path.join(directoryPath, directoryEntry.name);
@@ -1084,9 +1099,7 @@ export class BackupManager {
     };
 
     await walk(this.projectRoot);
-    // Manifests are validated with lexical string ordering in readManifest.
-    // Locale collation orders mixed case, punctuation, and Unicode differently.
-    entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+    entries.sort((left, right) => this.comparePaths(left.path, right.path));
     return this.filterEntries(entries);
   }
 
@@ -1152,7 +1165,7 @@ export class BackupManager {
       added: added.filter(relativePath => !renamedTo.has(relativePath)).sort(),
       modified: modified.sort(),
       deleted: deleted.filter(relativePath => !renamedFrom.has(relativePath)).sort(),
-      renamed: renamed.sort((left, right) => left.from.localeCompare(right.from))
+      renamed: renamed.sort((left, right) => this.comparePaths(left.from, right.from))
     };
   }
 
@@ -1268,15 +1281,19 @@ export class BackupManager {
     if (manifest.projectRoot !== this.projectRootReal) {
       throw new Error(`Backup belongs to a different project: ${snapshotId}`);
     }
-    let previousPath = '';
+    // Older manifests were sorted with localeCompare, whose order differs between
+    // Node/Electron and system locales. Preserve their recorded order for hashing;
+    // path uniqueness is the invariant needed by backup and restore operations.
+    const seenPaths = new Set<string>();
     for (const entry of manifest.entries) {
       if (
         !entry
         || typeof entry.path !== 'string'
         || entry.path.length === 0
         || entry.path !== this.normalizeRelative(entry.path)
-        || entry.path.includes('//')
-        || entry.path <= previousPath
+        || entry.path.includes('\0')
+        || entry.path.split('/').some(segment => segment === '' || segment === '.' || segment === '..')
+        || seenPaths.has(entry.path)
         || !['directory', 'file', 'symlink'].includes(entry.kind)
         || !Number.isInteger(entry.mode)
         || entry.mode < 0
@@ -1285,7 +1302,7 @@ export class BackupManager {
         || entry.size < 0
         || !Number.isFinite(entry.mtimeMs)
       ) {
-        throw new Error(`Backup manifest contains an invalid entry: ${snapshotId}`);
+        throw new Error(`Backup manifest contains an invalid entry: ${snapshotId} (path=${JSON.stringify(entry?.path)})`);
       }
       this.safeJoin(this.projectRoot, entry.path);
       if (entry.kind === 'file' && !/^[a-f0-9]{64}$/.test(entry.hash ?? '')) {
@@ -1294,7 +1311,7 @@ export class BackupManager {
       if (entry.kind === 'symlink' && typeof entry.linkTarget !== 'string') {
         throw new Error(`Backup manifest contains an invalid symlink: ${entry.path}`);
       }
-      previousPath = entry.path;
+      seenPaths.add(entry.path);
     }
     if (this.calculateTreeHash(manifest.entries) !== manifest.evidence.treeHash) {
       throw new Error(`Backup manifest tree hash is invalid: ${snapshotId}`);
@@ -1709,6 +1726,10 @@ export class BackupManager {
 
   private normalizeRelative(relativePath: string): string {
     return relativePath.split(path.sep).join('/').replace(/^\.\//, '');
+  }
+
+  private comparePaths(left: string, right: string): number {
+    return left < right ? -1 : left > right ? 1 : 0;
   }
 
   private depth(relativePath: string): number {

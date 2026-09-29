@@ -896,6 +896,10 @@ select:disabled {
   padding-left: 0;
 }
 
+.backup-settings-drawer .settings-heading {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .backup-settings-drawer form > .button {
   width: 100%;
 }

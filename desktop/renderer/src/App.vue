@@ -136,7 +136,7 @@ async function refresh(silent = false, projectId?: string): Promise<void> {
     }
     dashboard.value = response.data;
     refreshError.value = '';
-    if (!silent) showToast('全部状态已刷新', 'info');
+    if (!silent) showToast('会话状态已读取，文件核验在后台更新', 'info');
   } catch (error) {
     refreshError.value = error instanceof Error ? error.message : String(error);
     if (!silent) showToast(refreshError.value, 'error');
@@ -383,7 +383,7 @@ function handleAddDialogKeydown(event: KeyboardEvent): void {
 
         <SerenaStatusCard
           :status="selectedProject.project.serena"
-          :backup-protected="projectIsRunning"
+          :backup-protected="selectedProject.project.protectionState === 'running' || selectedProject.project.protectionState === 'degraded'"
           :busy="actionBusy"
           @retry="restartSerena"
           @settings="settingsOpen = true"

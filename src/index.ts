@@ -16,7 +16,7 @@ import {
   RestoreMode
 } from './backupManager.js';
 
-const SERVER_VERSION = '3.0.0';
+const SERVER_VERSION = '3.1.0';
 
 const responseSchema = {
   success: z.boolean(),

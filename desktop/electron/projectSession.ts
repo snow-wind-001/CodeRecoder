@@ -71,6 +71,10 @@ export class ProjectSession {
   private status: BackupStatusView | null = null;
   private snapshots: SnapshotSummary[] = [];
   private operationTail: Promise<void> = Promise.resolve();
+  private cacheRefreshPending = false;
+  private cacheScanInProgress = false;
+  private statusCheckedAt: number | null = null;
+  private lastCacheAttemptAt = 0;
   private restoreRecord?: RestoreRecord;
   private previewRecord?: PreviewRecord;
 
@@ -100,6 +104,11 @@ export class ProjectSession {
 
       this.protectionState = 'starting';
       this.lastError = null;
+      // Optional tooling must not wait for a large baseline or consume a backup slot.
+      const serenaStartup = this.serena.start().catch(error => {
+        console.error(`[${this.id}] Serena startup failed:`, this.errorMessage(error));
+        return this.serena.getStatus();
+      });
       try {
         const manager = new BackupManager();
         await this.scheduler.schedule(async () => {
@@ -152,7 +161,9 @@ export class ProjectSession {
         }
 
         // Serena is an optional sidecar. Its failure never changes backup health.
-        const serenaStatus = await this.scheduler.schedule(async () => await this.serena.start());
+        const serenaStatus = await serenaStartup;
+        const summary = this.getSummary();
+        console.error(`[${this.id}] protection started: protection=${summary.protectionState}, checkpoints=${summary.automaticCheckpoint.state}, serena=${serenaStatus.state}, snapshots=${summary.snapshotCount}`);
         return {
           success: true,
           message: this.protectionState === 'degraded'
@@ -162,7 +173,7 @@ export class ProjectSession {
               : serenaStatus.state === 'disabled'
                 ? '工程保护已启动'
                 : '工程保护与 Serena 会话已启动',
-          data: this.getSummary()
+          data: summary
         };
       } catch (error) {
         await this.watcher?.stop().catch(() => undefined);
@@ -189,17 +200,29 @@ export class ProjectSession {
   }
 
   async dashboard(refresh = true): Promise<ProjectDashboard> {
-    return await this.serialize(async () => {
-      if (refresh && this.manager) {
-        try {
-          await this.refreshCache();
-        } catch (error) {
-          this.lastError = this.errorMessage(error);
+    // Return observable state immediately, including while start/restore is queued.
+    // Coalesce disk scans and throttle event-triggered refreshes to avoid a scan loop.
+    if (refresh && this.manager && !this.cacheRefreshPending && !this.cacheScanInProgress
+      && Date.now() - this.lastCacheAttemptAt >= 10_000) {
+      this.cacheRefreshPending = true;
+      void this.serialize(async () => {
+        if (!this.manager || Date.now() - this.lastCacheAttemptAt < 10_000) return;
+        const error = await this.refreshCacheSafely('background dashboard refresh');
+        if (error) {
           this.protectionState = 'degraded';
+        } else {
+          const watcherError = this.config.autoCheckpoint
+            ? this.watcher?.getStatus().lastError ?? (this.watcher ? null : '文件监听尚未启动')
+            : null;
+          this.protectionState = watcherError ? 'degraded' : 'running';
+          this.lastError = watcherError;
         }
-      }
-      return this.buildDashboard();
-    });
+      }).finally(() => {
+        this.cacheRefreshPending = false;
+        this.onChange?.('checkpoint');
+      });
+    }
+    return this.buildDashboard();
   }
 
   async createSnapshot(rawInput: unknown): Promise<DesktopResult> {
@@ -396,14 +419,21 @@ export class ProjectSession {
   private async refreshCache(): Promise<void> {
     const manager = this.manager;
     if (!manager) return;
-    const [statusResponse, listResponse] = await this.scheduler.schedule(async () => await Promise.all([
-      manager.getStatus(),
-      manager.listBackups(200)
-    ]));
-    if (!statusResponse.success) throw new Error(statusResponse.error ?? statusResponse.message);
-    if (!listResponse.success) throw new Error(listResponse.error ?? listResponse.message);
-    this.status = statusResponse.data as unknown as BackupStatusView;
-    this.snapshots = (listResponse.data as unknown as { snapshots: SnapshotSummary[] }).snapshots;
+    this.cacheScanInProgress = true;
+    try {
+      const [statusResponse, listResponse] = await this.scheduler.schedule(async () => await Promise.all([
+        manager.getStatus(),
+        manager.listBackups(200)
+      ]));
+      if (!statusResponse.success) throw new Error(statusResponse.error ?? statusResponse.message);
+      if (!listResponse.success) throw new Error(listResponse.error ?? listResponse.message);
+      this.status = statusResponse.data as unknown as BackupStatusView;
+      this.snapshots = (listResponse.data as unknown as { snapshots: SnapshotSummary[] }).snapshots;
+      this.statusCheckedAt = Date.now();
+    } finally {
+      this.lastCacheAttemptAt = Date.now();
+      this.cacheScanInProgress = false;
+    }
   }
 
   private async refreshCacheSafely(context: string): Promise<string | null> {
@@ -422,6 +452,8 @@ export class ProjectSession {
       project: this.getSummary(),
       config: this.getRegistration(),
       status: this.status,
+      statusCheckedAt: this.statusCheckedAt,
+      statusRefreshing: this.cacheRefreshPending || this.cacheScanInProgress,
       snapshots: [...this.snapshots],
       recovery: this.buildRecoveryView(this.status?.lastRecovery ?? null)
     };

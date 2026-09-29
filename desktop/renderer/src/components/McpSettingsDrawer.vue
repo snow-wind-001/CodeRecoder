@@ -37,10 +37,11 @@ const clients: Array<{ id: McpClientTarget; label: string }> = [
   { id: 'codex', label: 'Codex' }
 ];
 const target = ref<McpClientTarget>('vscode');
-const service = ref<McpServiceTarget>('coderecorder');
+const service = ref<McpServiceTarget>('coderecoder');
 const environment = ref<McpEnvironmentReport | null>(null);
 const recommendation = ref<McpRecommendation | null>(null);
 const checking = ref(false);
+const installing = ref(false);
 const loadingSnippet = ref(false);
 const copied = ref(false);
 const error = ref('');
@@ -50,6 +51,7 @@ let previousFocus: HTMLElement | null = null;
 let requestSequence = 0;
 
 const availableCount = computed(() => environment.value?.items.filter(item => item.status === 'available').length ?? 0);
+const serenaMissing = computed(() => environment.value?.items.some(item => item.id === 'serena' && item.status !== 'available') ?? false);
 
 watch(() => props.open, async open => {
   if (!open) {
@@ -78,7 +80,7 @@ watch([target, service], async () => {
 
 watch(() => props.projectId, async () => {
   if (!props.open) return;
-  if (!props.projectId && service.value === 'serena') service.value = 'coderecorder';
+  if (!props.projectId && service.value === 'serena') service.value = 'coderecoder';
   await Promise.all([inspect(), loadRecommendation()]);
 });
 
@@ -92,6 +94,21 @@ async function inspect(): Promise<void> {
     error.value = caught instanceof Error ? caught.message : String(caught);
   } finally {
     checking.value = false;
+  }
+}
+
+async function installSerena(): Promise<void> {
+  installing.value = true;
+  error.value = '';
+  try {
+    const response = await getDesktopApi().installSerena();
+    if (!response.success) throw new Error(response.error ?? response.message);
+    emit('notify', 'Serena 安装完成，可重新启动工程的 Serena 连接', 'success');
+    await Promise.all([inspect(), loadRecommendation()]);
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : String(caught);
+  } finally {
+    installing.value = false;
   }
 }
 
@@ -197,6 +214,11 @@ function handleKeydown(event: KeyboardEvent): void {
                 <span><b>{{ item.label }}</b><small>{{ item.version || item.detail }}</small></span>
               </div>
             </div>
+            <button v-if="serenaMissing || installing" class="button button-primary copy-config" type="button" :disabled="installing" @click="installSerena">
+              <LoaderCircle v-if="installing" class="spin" :size="15" />
+              {{ installing ? '正在下载并安装 Serena…' : '下载并安装 Serena' }}
+            </button>
+            <p v-if="serenaMissing || installing" class="recommendation-notes">首次安装需要联网，自动准备 Python，安装在当前用户目录。</p>
           </section>
 
           <section class="configuration-panel" aria-labelledby="configuration-title">
@@ -207,7 +229,7 @@ function handleKeydown(event: KeyboardEvent): void {
               <button v-for="client in clients" :key="client.id" type="button" role="tab" :aria-selected="target === client.id" :class="{ active: target === client.id }" @click="target = client.id">{{ client.label }}</button>
             </div>
             <div class="segmented-control service-tabs" role="group" aria-label="服务类型">
-              <button type="button" :aria-pressed="service === 'coderecorder'" :class="{ active: service === 'coderecorder' }" @click="service = 'coderecorder'">CodeRecoder</button>
+              <button type="button" :aria-pressed="service === 'coderecoder'" :class="{ active: service === 'coderecoder' }" @click="service = 'coderecoder'">CodeRecoder</button>
               <button type="button" :disabled="!projectId" :aria-pressed="service === 'serena'" :class="{ active: service === 'serena' }" @click="service = 'serena'">Serena</button>
             </div>
 

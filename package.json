@@ -1,6 +1,6 @@
 {
   "name": "coderecoder-mcp",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Production-oriented code backup and verified restore service for MCP and Electron.",
   "desktopName": "coderecoder.desktop",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "desktop:bundle:mcp": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=build/mcp/index.mjs",
     "desktop:build": "npm run build && npm run desktop:typecheck && electron-vite build --config desktop/electron.vite.config.ts && npm run desktop:bundle:mcp",
     "desktop:start": "npm run desktop:build && electron dist-desktop/main/index.js",
-    "desktop:package:deb": "npm run desktop:build && electron-builder --config electron-builder.yml --linux deb --x64 --publish never && npm run desktop:verify:deb",
+    "desktop:package:deb": "npm run desktop:deb && npm run desktop:verify:deb",
     "desktop:verify:deb": "node desktop/packaging/verify-deb.mjs",
     "desktop:install-linux": "bash desktop/install-linux-launcher.sh --pin",
     "prepare": "npm run build",
@@ -25,7 +25,10 @@
     "test:desktop": "npm run desktop:typecheck && tsx --test test/desktop-controller.test.ts",
     "test:legacy": "bash test/test_full_workflow.sh",
     "clean": "rm -rf dist/",
-    "lint": "tsc --noEmit && npm run desktop:typecheck"
+    "lint": "tsc --noEmit && npm run desktop:typecheck",
+    "serena:install": "bash scripts/install-serena.sh",
+    "desktop:deb": "npm run desktop:build && node scripts/prepare-deb-hooks.cjs && electron-builder --linux deb --x64 --publish never",
+    "desktop:verify-deb": "bash scripts/verify-deb.sh"
   },
   "keywords": [
     "mcp",
@@ -66,7 +69,7 @@
     "@types/node": "^22.20.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "electron": "^44.2.0",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "26.15.3",
     "electron-vite": "^5.0.0",
     "esbuild": "^0.25.9",
     "tsx": "^4.6.0",

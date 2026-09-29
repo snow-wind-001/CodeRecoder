@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants as fsConstants, promises as nodeFs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { mcpEnvironment } from './mcpEnvironment.js';
 import type {
   EnvironmentCheckItem,
   McpClientTarget,
@@ -99,11 +100,12 @@ export class McpIntegrationService {
       {
         id: 'serena',
         label: 'Serena CLI',
-        status: serenaPath ? 'available' : 'missing',
+        status: serenaVersion ? 'available' : serenaPath ? 'warning' : 'missing',
         required: false,
         path: serenaPath,
         version: serenaVersion,
-        detail: serenaPath ? 'CLI 可用于客户端连接和桌面 sidecar' : '未在安全候选路径或 PATH 中找到 serena'
+        detail: serenaVersion ? 'CLI 可用于客户端连接和桌面 sidecar'
+          : serenaPath ? 'CLI 版本检查失败，可重新安装后复查' : '未在安全候选路径或 PATH 中找到 serena'
       },
       {
         id: 'serena-project',
@@ -150,13 +152,13 @@ export class McpIntegrationService {
     if (service === 'serena' && !project) {
       throw new Error('生成 Serena 配置前必须选择一个工程');
     }
-    const bundledLauncher = service === 'coderecorder'
+    const bundledLauncher = service === 'coderecoder'
       ? await this.resolveBundledMcpLauncher()
       : null;
-    const command = service === 'coderecorder'
+    const command = service === 'coderecoder'
       ? bundledLauncher ?? await this.findExecutable('node') ?? 'node'
       : project?.serena.cliPath ?? await this.findExecutable('serena') ?? 'serena';
-    const args = service === 'coderecorder'
+    const args = service === 'coderecoder'
       ? bundledLauncher ? [] : [this.serverEntry]
       : [
           'start-mcp-server',
@@ -173,7 +175,7 @@ export class McpIntegrationService {
         ];
     const serverName = service;
     const endpoint = service === 'serena' ? project?.serena.endpoint ?? null : null;
-    const notes = service === 'coderecorder'
+    const notes = service === 'coderecoder'
       ? bundledLauncher
         ? [
             '安装包已内置 MCP 运行时；移动或卸载 CodeRecoder 后需要重新生成客户端配置。',
@@ -185,6 +187,7 @@ export class McpIntegrationService {
           ]
       : [
           '推荐使用 stdio 配置；Electron 显示的 HTTP endpoint 只在当前工程会话存活期间有效。',
+          ...(target === 'codex' ? ['首次启动可能下载语言服务；可在 [mcp_servers.serena] 中设置 startup_timeout_sec = 120 和 tool_timeout_sec = 240，保存后重启 Codex。'] : []),
           '若出现 Error loading configuration，请在桌面端查看 Serena 状态并使用“重新检测/启动”。'
         ];
 
@@ -247,6 +250,8 @@ export class McpIntegrationService {
   private async findExecutable(name: string): Promise<string | null> {
     const executableName = process.platform === 'win32' ? `${name}.exe` : name;
     const candidates = [
+      ...(name === 'serena' && process.env.CODERECODER_SERENA_PATH && path.isAbsolute(process.env.CODERECODER_SERENA_PATH)
+        ? [process.env.CODERECODER_SERENA_PATH] : []),
       path.join(os.homedir(), '.local', 'bin', executableName),
       ...((process.env.PATH ?? '').split(path.delimiter)
         .filter(directory => directory && path.isAbsolute(directory))
@@ -270,7 +275,8 @@ export class McpIntegrationService {
     try {
       const output = await new Promise<string>((resolve, reject) => {
         const child = spawn(command, args, {
-          cwd: this.repositoryRoot,
+          cwd: os.homedir(),
+          env: mcpEnvironment(),
           shell: false,
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe']
@@ -327,7 +333,7 @@ export class McpIntegrationService {
   }
 
   private serviceLabel(service: McpServiceTarget): string {
-    return service === 'coderecorder' ? 'CodeRecoder' : 'Serena';
+    return service === 'coderecoder' ? 'CodeRecoder' : 'Serena';
   }
 
   private shellQuote(value: string): string {
